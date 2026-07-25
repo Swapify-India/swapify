@@ -45,29 +45,44 @@ and timeline.
 ```
 Swapify/
 │
-├── src/                        Backend application code (FastAPI)
-│   ├── app.py                  All API routes, DB access, auth, scoring logic
-│   ├── ocr_label_scanner.py    OCR (Tesseract) label-scanning support
-│   ├── category_taxonomy.py    Product → category classification rules
-│   └── observability.py        Logging / error-reporting hooks
+├── src/                          Backend application code (FastAPI)
+│   ├── app.py                    All API routes, DB access, auth, scoring logic
+│   ├── ocr_label_scanner.py      OCR (Tesseract) label-scanning support
+│   ├── category_taxonomy.py      Product → category classification rules
+│   └── observability.py          Logging / error-reporting hooks
 │
-├── static/                     Everything the browser loads directly
-│   ├── index.html              All frontend pages (single HTML shell)
-│   ├── style.css               Global styling, design tokens, dark mode
-│   ├── script.js               All frontend application logic
-│   └── swapify_products.csv    Seed data for the product catalogue
+├── static/                       Everything the browser loads directly
+│   ├── index.html                All frontend pages (single HTML shell)
+│   ├── style.css                 Global styling, design tokens, dark mode
+│   ├── script.js                 All frontend application logic
+│   └── swapify_products.csv      Seed data for the product catalogue
 │
-├── docs/                       Project documentation (this folder)
+├── docs/                         Project documentation (this folder)
 │
-├── swapify.db                  SQLite database (created/updated at runtime)
+├── uploads/
+│   └── product_images/           Runtime storage for uploaded product photos
 │
-└── requirements.txt            Python backend dependencies
+├── swapify.db                    SQLite database (created/updated at runtime)
+├── requirements.txt              Python backend dependencies
+│
+├── API_DOCS.md                   Backend API reference (Dhruv)
+├── FRONTEND_INTEGRATION.md       Backend→frontend integration notes (Dhruv)
+├── DEPLOYMENT_FRONTEND.md        Frontend deployment notes (Rashi)
+├── PERFORMANCE_REPORT.md         Backend performance/load-test report (Dhruv)
+├── sync_db.py                    Ops script: syncs the product CSV into the live DB
+├── test_api.sh                   Backend API test script (bash)
+└── test_api.ps1                  Backend API test script (PowerShell)
 ```
 
 > Note: some backend deployments also keep `css/`, `js/`, `images/`, and `icons/`
 > as separate asset folders under `static/` as the app grows. In the current build,
 > `style.css` and `script.js` are consolidated as single top-level files under
 > `static/` for simplicity — see `04_DESIGN_DECISIONS.md` for the reasoning.
+>
+> The root-level `.md` files (aside from `DEPLOYMENT_FRONTEND.md`), `sync_db.py`,
+> and the `test_api.*` scripts are backend/ops artifacts owned by Dhruv, not part
+> of the frontend build — included here only so the diagram reflects the full
+> repository.
 
 ---
 

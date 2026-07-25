@@ -47,7 +47,6 @@ See `05_FEATURE_STATUS.md` for the full feature-by-feature status table.
 ```
 Swapify
 │
-├── README.md
 ├── docs/
 │   ├── 01_UI_IMPLEMENTATION.md
 │   ├── 02_PROJECT_STRUCTURE.md
@@ -66,10 +65,20 @@ Swapify
 │   ├── ocr_label_scanner.py
 │   ├── category_taxonomy.py
 │   └── observability.py
-└── requirements.txt
+├── uploads/product_images/        Runtime-uploaded product photos
+├── swapify.db
+├── requirements.txt
+├── API_DOCS.md                    Backend API reference (Dhruv)
+├── FRONTEND_INTEGRATION.md        Backend→frontend integration notes (Dhruv)
+├── DEPLOYMENT_FRONTEND.md         Frontend deployment notes (Rashi)
+├── PERFORMANCE_REPORT.md          Backend performance/load-test report (Dhruv)
+├── sync_db.py                     Ops script: syncs product CSV into the live DB
+├── test_api.sh / test_api.ps1     Backend API test scripts (Dhruv)
 ```
 
-See `02_PROJECT_STRUCTURE.md` for a full breakdown of what lives where and why.
+See `02_PROJECT_STRUCTURE.md` for a full breakdown of what lives where and why —
+including which items are frontend (this documentation's scope) versus backend/ops
+artifacts owned by Dhruv, kept in the diagram only for completeness.
 
 ---
 
