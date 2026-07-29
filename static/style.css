@@ -932,11 +932,16 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
 .alt-add-compare-btn:hover{background:var(--lime);color:var(--navy-deep);transform:scale(1.08);}
 .alt-add-compare-btn.in-compare{background:var(--lime);color:var(--navy-deep);}
 
-.compare-fab{position:fixed;bottom:84px;left:16px;background:var(--navy-deep);color:#fff;border-radius:100px;padding:13px 20px 13px 16px;display:none;align-items:center;gap:9px;cursor:pointer;box-shadow:0 8px 24px rgba(10,42,102,0.35);z-index:190;font-family:'Poppins',sans-serif;font-weight:700;font-size:0.85rem;transition:transform var(--transition),box-shadow var(--transition);}
+.compare-fab{position:fixed;bottom:84px;left:16px;background:var(--navy-deep);color:#fff;border-radius:100px;padding:13px 20px 13px 16px;display:none;align-items:center;gap:9px;cursor:pointer;box-shadow:0 8px 24px rgba(10,42,102,0.35);z-index:190;font-family:'Poppins',sans-serif;font-weight:700;font-size:0.85rem;transition:bottom 0.3s ease,transform var(--transition),box-shadow var(--transition);}
 .compare-fab.visible{display:inline-flex;animation:fadeUp 0.25s ease;}
 .compare-fab:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(10,42,102,0.45);}
 .compare-fab svg{width:18px;height:18px;}
 .compare-fab-count{background:var(--lime);color:var(--navy-deep);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-family:'DM Mono',monospace;}
+/* When home page is active (Quick Scan button visible), lift Compare FAB above it */
+#page-home.active ~ .compare-fab.visible{bottom:148px;}
+@media(max-width:540px){
+  #page-home.active ~ .compare-fab.visible{bottom:140px;}
+}
 
 .compare-panel-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,42,102,0.55);z-index:650;align-items:center;justify-content:center;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:20px;}
 .compare-panel-overlay.active{display:flex;}
@@ -1510,7 +1515,7 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
   .action-btn-row{gap:6px;}
   .chat-window{bottom:0;right:0;width:100%;height:88vh;max-height:88vh;border-radius:18px 18px 0 0;z-index:601;}
   .chat-fab{bottom:76px;right:16px;z-index:210;}
-  .compare-fab{left:14px;bottom:140px;z-index:210;padding:11px 16px 11px 13px;font-size:0.78rem;}
+  .compare-fab{left:14px;bottom:76px;z-index:210;padding:11px 16px 11px 13px;font-size:0.78rem;}
   .monthly-stats-grid{grid-template-columns:repeat(2,1fr);}
   .monthly-best-worst{grid-template-columns:1fr;}
   .monthly-chart-row{grid-template-columns:1fr;}
