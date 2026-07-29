@@ -666,6 +666,52 @@ button:active{transform:translateY(0) scale(0.99);}
 .auth-divider{text-align:center;font-family:'DM Mono',monospace;font-size:0.68rem;color:var(--text-muted);margin:14px 0;position:relative;}
 .auth-divider::before{content:'';position:absolute;left:0;top:50%;width:40%;height:1px;background:var(--border);}
 .auth-divider::after{content:'';position:absolute;right:0;top:50%;width:40%;height:1px;background:var(--border);}
+.auth-divider span{background:var(--card-bg);padding:0 10px;position:relative;z-index:1;}
+
+/* ── Forgot Password Link ── */
+.auth-forgot-wrap{text-align:right;margin:-4px 0 8px;}
+.auth-forgot-btn{background:none;border:none;color:var(--accent);font-family:'DM Mono',monospace;font-size:0.72rem;cursor:pointer;padding:2px 0;text-decoration:none;transition:color var(--transition);}
+.auth-forgot-btn:hover{color:#6e46ff;text-decoration:underline;}
+.auth-forgot-btn:hover::after{display:none;}
+
+/* ── Continue with Google Button ── */
+.btn-google-login{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px 14px;border:1.5px solid var(--border);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text);font-family:'Poppins',sans-serif;font-size:0.88rem;font-weight:600;cursor:pointer;transition:all var(--transition);}
+.btn-google-login:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(28,179,153,0.12);transform:translateY(-1px);}
+.btn-google-login:hover::after{display:none;}
+.btn-google-login svg{flex-shrink:0;}
+[data-theme="dark"] .btn-google-login{border-color:var(--border);background:var(--off-white);}
+[data-theme="dark"] .btn-google-login:hover{border-color:var(--accent);}
+
+/* ══════════════════════════════════════
+   GENERIC MODAL OVERLAY SYSTEM
+   (Forgot Password, Reset Password, Report Missing Product)
+   ══════════════════════════════════════ */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(10,42,102,0.55);z-index:500;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:20px;}
+.modal-overlay.active{display:flex;}
+.modal-box{background:var(--card-bg);border-radius:20px;padding:28px 26px;max-width:420px;width:100%;box-shadow:0 24px 60px rgba(10,42,102,0.3);animation:fadeUp 0.28s ease;border:1px solid var(--border);}
+.modal-box h3{font-family:'Sora',sans-serif;font-size:1.15rem;font-weight:700;margin-bottom:6px;color:var(--text);}
+.modal-box p{font-size:0.8rem;color:var(--text-muted);margin-bottom:16px;line-height:1.5;}
+.modal-box input,.modal-box textarea{width:100%;padding:11px 14px;border:1.5px solid var(--border);border-radius:var(--radius-sm);font-size:0.86rem;color:var(--text);background:var(--card-bg);outline:none;transition:border-color var(--transition);}
+.modal-box input:focus,.modal-box textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(28,179,153,0.12);}
+.modal-btns{display:flex;gap:10px;margin-top:4px;}
+.modal-btns button{flex:1;padding:12px;border:none;border-radius:var(--radius-sm);font-family:'Poppins',sans-serif;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all var(--transition);}
+.modal-btns button:hover{transform:translateY(-1px);}
+.modal-btns button:hover::after{display:none;}
+.modal-btns .btn-cancel{background:var(--off-white);color:var(--text-muted);border:1.5px solid var(--border);}
+.modal-btns .btn-cancel:hover{border-color:var(--coral);color:var(--coral);}
+.modal-status{font-family:'DM Mono',monospace;font-size:0.78rem;padding:9px 13px;border-radius:var(--radius-xs);margin-bottom:12px;display:none;}
+.modal-status.visible{display:block;}
+.modal-status.success{background:rgba(198,241,53,0.15);color:#5a7a00;border:1px solid rgba(198,241,53,0.3);}
+.modal-status.error{background:#fff0f0;border:1px solid #ffd0d0;color:#e03a3a;}
+[data-theme="dark"] .modal-status.success{background:rgba(198,241,53,0.08);color:var(--lime);}
+[data-theme="dark"] .modal-status.error{background:#2a0a0a;border-color:#4a1010;color:#ff8080;}
+
+/* ── Search Source Badge (database vs Open Food Facts) ── */
+.search-source-badge{display:inline-block;font-size:0.6rem;font-family:'DM Mono',monospace;padding:2px 7px;border-radius:100px;margin-left:6px;vertical-align:middle;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;}
+.search-source-badge.source-db{background:rgba(198,241,53,0.2);color:#5a7a00;}
+.search-source-badge.source-off{background:rgba(59,107,255,0.12);color:#3b6bff;}
+[data-theme="dark"] .search-source-badge.source-db{background:rgba(198,241,53,0.1);color:var(--lime);}
+[data-theme="dark"] .search-source-badge.source-off{background:rgba(59,107,255,0.15);color:#7ca0ff;}
 
 /* ══════════════════════════════════════
    PROFILE PANEL
@@ -1464,7 +1510,7 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
   .action-btn-row{gap:6px;}
   .chat-window{bottom:0;right:0;width:100%;height:88vh;max-height:88vh;border-radius:18px 18px 0 0;z-index:601;}
   .chat-fab{bottom:76px;right:16px;z-index:210;}
-  .compare-fab{left:14px;bottom:76px;z-index:210;padding:11px 16px 11px 13px;}
+  .compare-fab{left:14px;bottom:140px;z-index:210;padding:11px 16px 11px 13px;font-size:0.78rem;}
   .monthly-stats-grid{grid-template-columns:repeat(2,1fr);}
   .monthly-best-worst{grid-template-columns:1fr;}
   .monthly-chart-row{grid-template-columns:1fr;}

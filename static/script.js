@@ -2120,29 +2120,18 @@ async function _loadPnfTrending() {
 }
 
 function pnfReportMissing(barcode) {
-    if (!isReallyLoggedIn()) {
-        alert('Please log in to report a missing product \u2014 this helps us credit contributors.');
-        openAuthModal();
-        return;
-    }
-    var name = (prompt('What\u2019s this product called? (optional)') || '').trim();
-    (async function () {
-        try {
-            var res = await fetch(BACKEND_BASE_URL + '/report-missing', {
-                method: 'POST',
-                headers: Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders()),
-                body: JSON.stringify({ barcode: barcode, product_name: name || null })
-            });
-            if (!res.ok) {
-                if (handleAuthExpiry(res)) return;
-                alert('Could not submit the report \u2014 please try again.');
-                return;
-            }
-            showToast('Thanks! We\u2019ve logged this product for review.','success');
-        } catch (e) {
-            alert('Backend unreachable \u2014 could not submit the report.');
+    /* Upgraded: now opens a proper modal (defined at end of file) instead of
+       using prompt() + alert(). If the modal hasn't loaded yet, fall back. */
+    if (typeof openReportMissingModal === 'function') {
+        openReportMissingModal(barcode);
+    } else {
+        if (!isReallyLoggedIn()) {
+            alert('Please log in to report a missing product.');
+            openAuthModal();
+            return;
         }
-    })();
+        alert('Report form is loading \u2014 please try again in a moment.');
+    }
 }
 
 function pnfScanAgain() {
@@ -6417,3 +6406,315 @@ function copyScoreToClipboard(score) {
 /* ── Logo click → home ─────────────────────────────────── */
 var _logoEl = document.querySelector('.logo');
 if (_logoEl) _logoEl.onclick = function(){ showPage('home'); };
+
+/* ══════════════════════════════════════════════════════════════════
+   RASHI FRONTEND TASKS — Forgot Password, Reset Password,
+   Google Login, Report Missing Product Modal, Search Enhancements
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Generic modal overlay click-to-close ── */
+function handleOverlayClick(event, overlayId) {
+  if (event.target.id === overlayId) {
+    document.getElementById(overlayId).classList.remove('active');
+  }
+}
+
+/* ── Modal status message helper ── */
+function setModalStatus(elementId, message, type) {
+  var el = document.getElementById(elementId);
+  if (!el) return;
+  el.className = 'modal-status visible ' + (type || 'info');
+  el.textContent = message;
+}
+function clearModalStatus(elementId) {
+  var el = document.getElementById(elementId);
+  if (el) { el.className = 'modal-status'; el.textContent = ''; }
+}
+
+/* ─────────────────────────────────────
+   TASK 2A: FORGOT PASSWORD
+   ───────────────────────────────────── */
+function openForgotPasswordModal() {
+  clearModalStatus('forgotPasswordStatus');
+  var emailInput = document.getElementById('forgotEmailInput');
+  if (emailInput) emailInput.value = (document.getElementById('loginEmail') || {}).value || '';
+  document.getElementById('forgotPasswordOverlay').classList.add('active');
+}
+function closeForgotPasswordModal() {
+  document.getElementById('forgotPasswordOverlay').classList.remove('active');
+}
+async function submitForgotPassword() {
+  var email = (document.getElementById('forgotEmailInput') || {}).value.trim();
+  if (!email) {
+    setModalStatus('forgotPasswordStatus', 'Please enter your email address.', 'error');
+    return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    setModalStatus('forgotPasswordStatus', 'Please enter a valid email address.', 'error');
+    return;
+  }
+  setModalStatus('forgotPasswordStatus', 'Sending reset link…', 'success');
+  try {
+    var res = await fetch(BACKEND_BASE_URL + '/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email })
+    });
+    if (res.ok) {
+      setModalStatus('forgotPasswordStatus', '✓ If that email is registered, a reset link has been sent. Check your inbox!', 'success');
+    } else {
+      var errData = {};
+      try { errData = await res.json(); } catch(e) {}
+      setModalStatus('forgotPasswordStatus', errData.error || 'Could not send reset link. Please try again.', 'error');
+    }
+  } catch (e) {
+    setModalStatus('forgotPasswordStatus', 'Backend unavailable — Dhruv is still setting up this API. Please try again later.', 'error');
+  }
+}
+
+/* ─────────────────────────────────────
+   TASK 2B: RESET PASSWORD
+   ───────────────────────────────────── */
+function openResetPasswordModal(token) {
+  clearModalStatus('resetPasswordStatus');
+  var pwInput = document.getElementById('resetPasswordInput');
+  var confirmInput = document.getElementById('resetPasswordConfirmInput');
+  if (pwInput) pwInput.value = '';
+  if (confirmInput) confirmInput.value = '';
+  window._resetPasswordToken = token || '';
+  document.getElementById('resetPasswordOverlay').classList.add('active');
+}
+function closeResetPasswordModal() {
+  document.getElementById('resetPasswordOverlay').classList.remove('active');
+}
+async function submitResetPassword() {
+  var pw = (document.getElementById('resetPasswordInput') || {}).value;
+  var confirm = (document.getElementById('resetPasswordConfirmInput') || {}).value;
+  if (!pw || pw.length < 6) {
+    setModalStatus('resetPasswordStatus', 'Password must be at least 6 characters.', 'error');
+    return;
+  }
+  if (pw !== confirm) {
+    setModalStatus('resetPasswordStatus', 'Passwords do not match.', 'error');
+    return;
+  }
+  setModalStatus('resetPasswordStatus', 'Resetting password…', 'success');
+  try {
+    var res = await fetch(BACKEND_BASE_URL + '/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: window._resetPasswordToken || '', new_password: pw })
+    });
+    if (res.ok) {
+      setModalStatus('resetPasswordStatus', '✓ Password reset successfully! You can now log in.', 'success');
+      setTimeout(function() { closeResetPasswordModal(); }, 2000);
+    } else {
+      var errData = {};
+      try { errData = await res.json(); } catch(e) {}
+      setModalStatus('resetPasswordStatus', errData.error || 'Could not reset password. Link may have expired.', 'error');
+    }
+  } catch (e) {
+    setModalStatus('resetPasswordStatus', 'Backend unavailable — Dhruv is still setting up this API. Please try again later.', 'error');
+  }
+}
+
+/* Check URL for reset token on page load */
+(function checkResetToken() {
+  var params = new URLSearchParams(window.location.search);
+  var token = params.get('reset_token') || params.get('token');
+  if (token) {
+    setTimeout(function() { openResetPasswordModal(token); }, 600);
+  }
+})();
+
+/* ─────────────────────────────────────
+   TASK 2C: CONTINUE WITH GOOGLE
+   ───────────────────────────────────── */
+function loginWithGoogle() {
+  /* Redirect to backend Google OAuth endpoint.
+     Dhruv will create GET /auth/google which initiates the OAuth 2.0 flow.
+     If the backend isn't ready yet, show a friendly message. */
+  try {
+    window.location.href = BACKEND_BASE_URL + '/auth/google';
+  } catch (e) {
+    showToast('Google login is being set up — please try again later.', 'info');
+  }
+}
+
+/* ─────────────────────────────────────
+   TASK 3: REPORT MISSING PRODUCT — MODAL
+   (Replaces the old prompt()-based pnfReportMissing)
+   ───────────────────────────────────── */
+function openReportMissingModal(barcode) {
+  if (!isReallyLoggedIn()) {
+    showToast('Please log in first to report a missing product.', 'error');
+    openAuthModal();
+    return;
+  }
+  clearModalStatus('reportMissingStatus');
+  var barcodeInput = document.getElementById('reportMissingBarcode');
+  var nameInput = document.getElementById('reportMissingName');
+  var brandInput = document.getElementById('reportMissingBrand');
+  var commentInput = document.getElementById('reportMissingComment');
+  if (barcodeInput) barcodeInput.value = barcode || '';
+  if (nameInput) nameInput.value = '';
+  if (brandInput) brandInput.value = '';
+  if (commentInput) commentInput.value = '';
+  document.getElementById('reportMissingModalOverlay').classList.add('active');
+}
+function closeReportMissingModal() {
+  document.getElementById('reportMissingModalOverlay').classList.remove('active');
+}
+async function submitMissingReport() {
+  var barcode = (document.getElementById('reportMissingBarcode') || {}).value.trim();
+  var name = (document.getElementById('reportMissingName') || {}).value.trim();
+  var brand = (document.getElementById('reportMissingBrand') || {}).value.trim();
+  var comment = (document.getElementById('reportMissingComment') || {}).value.trim();
+
+  if (!barcode && !name) {
+    setModalStatus('reportMissingStatus', 'Please provide at least a barcode or product name.', 'error');
+    return;
+  }
+
+  setModalStatus('reportMissingStatus', 'Submitting report…', 'success');
+
+  try {
+    var res = await fetch(BACKEND_BASE_URL + '/report-missing', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders()),
+      body: JSON.stringify({
+        barcode: barcode || null,
+        product_name: name || null,
+        brand: brand || null,
+        comment: comment || null
+      })
+    });
+    if (!res.ok) {
+      if (handleAuthExpiry(res)) return;
+      var errData = {};
+      try { errData = await res.json(); } catch(e) {}
+      setModalStatus('reportMissingStatus', errData.error || 'Could not submit report. Please try again.', 'error');
+      return;
+    }
+    setModalStatus('reportMissingStatus', '✓ Thanks! We\u2019ve logged this product for review.', 'success');
+    showToast('Missing product reported successfully!', 'success');
+    setTimeout(function() { closeReportMissingModal(); }, 1800);
+  } catch (e) {
+    setModalStatus('reportMissingStatus', 'Backend unreachable — could not submit. Please try again later.', 'error');
+  }
+}
+
+/* Wire the old pnfReportMissing to use the new modal instead of prompt() */
+function pnfReportMissing(barcode) {
+  openReportMissingModal(barcode);
+}
+
+/* ─────────────────────────────────────
+   TASK 5: SEARCH — DISPLAY OPEN FOOD FACTS
+   Enhanced to show source badges and fall back to OFF global search
+   ───────────────────────────────────── */
+var _origRenderSearchSuggestions = renderSearchSuggestions;
+renderSearchSuggestions = function(results) {
+  var box = document.getElementById('searchSuggestList');
+  if (!box) return;
+  if (!results || !results.length) {
+    box.innerHTML = '<div class="search-suggest-status">No matching products found.</div>';
+    box.classList.add('visible');
+    return;
+  }
+  box.innerHTML = results.map(function(r) {
+    var hasScore = typeof r.score === 'number';
+    var gc = !hasScore ? '' : (r.score >= 9 ? 'score-a' : r.score >= 7 ? 'score-b' : r.score >= 5 ? 'score-c' : r.score >= 3 ? 'score-d' : 'score-f');
+    var scoreCol = hasScore
+      ? '<div class="search-suggest-score ' + gc + '">' + (r.grade || '?') + '</div>'
+      : '<div class="search-suggest-score" style="background:var(--off-white);color:var(--text-muted);">?</div>';
+    var sourceBadge = r.source === 'off'
+      ? '<span class="search-source-badge source-off">OFF</span>'
+      : (r.source === 'db' ? '<span class="search-source-badge source-db">DB</span>' : '');
+    return '<div class="search-suggest-row" onclick="selectSearchSuggestion(\'' + r.barcode + '\')">'
+      + scoreCol
+      + '<div class="search-suggest-info"><div class="search-suggest-name">' + (r.name || 'Unknown') + sourceBadge + (hasScore ? ' ' + buildRecommendedBadgeHTML(null, { score: r.score }, true) : '') + '</div><div class="search-suggest-brand">' + (r.brand || '') + (hasScore ? ' \u00b7 ' + r.score + '/10' : '') + '</div></div>'
+      + '</div>';
+  }).join('');
+  box.classList.add('visible');
+};
+
+/* Enhance runAutocompleteSearch to also query Open Food Facts */
+var _origRunAutocompleteSearch = runAutocompleteSearch;
+runAutocompleteSearch = async function(query) {
+  var mySeq = ++_searchRequestSeq;
+  var dbResults = null;
+  var offResults = [];
+
+  /* 1. Try our backend autocomplete */
+  try {
+    var res = await fetch(AUTOCOMPLETE_URL + '?q=' + encodeURIComponent(query) + '&limit=8');
+    if (res.ok) {
+      var data = await res.json();
+      if (Array.isArray(data.suggestions)) {
+        dbResults = data.suggestions.map(function(r) {
+          var enrich = (csvDBLoaded && csvDB[r.barcode]) ? (function() {
+            var norm = normBackend(csvDB[r.barcode]);
+            return calculateScore(norm, '');
+          })() : null;
+          return {
+            barcode: r.barcode,
+            name: r.product_name,
+            brand: r.brand,
+            score: enrich ? enrich.score : undefined,
+            grade: enrich ? enrich.grade : undefined,
+            source: 'db'
+          };
+        });
+      }
+    }
+  } catch (e) { /* fall through */ }
+
+  /* 2. Try Open Food Facts search API */
+  try {
+    var offRes = await fetch('https://world.openfoodfacts.org/cgi/search.pl?search_terms=' + encodeURIComponent(query) + '&search_simple=1&action=process&json=1&page_size=5');
+    if (offRes.ok) {
+      var offData = await offRes.json();
+      if (offData.products && offData.products.length) {
+        offResults = offData.products.map(function(p) {
+          return {
+            barcode: p.code || p._id || '',
+            name: p.product_name || p.product_name_en || 'Unknown',
+            brand: p.brands || '',
+            score: undefined,
+            grade: undefined,
+            source: 'off'
+          };
+        }).filter(function(p) { return p.barcode && p.name && p.name !== 'Unknown'; });
+      }
+    }
+  } catch (e) { /* Open Food Facts unavailable, skip */ }
+
+  if (mySeq !== _searchRequestSeq) return;
+
+  /* 3. Fallback to local CSV if backend failed */
+  if (!dbResults) {
+    dbResults = [];
+    if (csvDBLoaded) {
+      var q = query.toLowerCase();
+      dbResults = Object.keys(csvDB).filter(function(bc) {
+        return (csvDB[bc].product_name || '').toLowerCase().indexOf(q) !== -1;
+      }).slice(0, 8).map(function(bc) {
+        var prod = csvDB[bc], norm = normBackend(prod), res = calculateScore(norm, '');
+        return { barcode: bc, name: prod.product_name, brand: prod.brand, score: res.score, grade: res.grade, source: 'db' };
+      });
+    }
+  }
+
+  /* 4. Merge: DB first, then OFF (deduped by barcode) */
+  var seenBarcodes = {};
+  var merged = [];
+  dbResults.forEach(function(r) {
+    if (!seenBarcodes[r.barcode]) { seenBarcodes[r.barcode] = true; merged.push(r); }
+  });
+  offResults.forEach(function(r) {
+    if (!seenBarcodes[r.barcode]) { seenBarcodes[r.barcode] = true; merged.push(r); }
+  });
+
+  renderSearchSuggestions(merged.slice(0, 10));
+};

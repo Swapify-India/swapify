@@ -140,7 +140,7 @@ or dev server. Full setup and troubleshooting steps are in
 | --- | --- | --- |
 | Backend (FastAPI) | Render | https://swapify-3.onrender.com |
 | Frontend (static files) | Vercel | https://swapify-three.vercel.app/ |
-| Source control | GitHub | github.com/Rashi-123456/swapify |
+| Source control | GitHub | github.com/Swapify-India/swapify |
 
 Frontend and backend are hosted separately, so `BACKEND_OVERRIDE_URL` in
 `static/script.js` points explicitly at the Render URL. See

@@ -195,7 +195,7 @@ is reachable (`GET /health` should return `200`) before debugging a "blank" scre
 | --- | --- | --- |
 | Backend (FastAPI) | Render | `https://swapify-3.onrender.com` |
 | Frontend (static files) | Vercel | `https://swapify-three.vercel.app/` |
-| Source control | GitHub | `github.com/Rashi-123456/swapify` |
+| Source control | GitHub | `github.com/Swapify-India/swapify` |
 
 The frontend and backend are hosted **separately** (Vercel + Render), which is why
 `BACKEND_OVERRIDE_URL` in `static/script.js` is set to the Render URL rather than
