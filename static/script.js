@@ -381,6 +381,32 @@ function isInFavorites(barcode){ return loadFavorites().some(function(f){ return
 // same everywhere. The backend already has full favorites support
 // (POST/DELETE/GET /favorites) — it just wasn't being called. Wired up the
 // same way preferences are: push on every change, pull-and-merge on login.
+// ── Shared fix for "deleted item comes back after reload" ──
+// Favorites, Compare List and My Swaps all sync by diffing this browser's
+// local list against the backend's list: anything local-but-missing-from-
+// backend gets pushed up as a "new" item. The bug: that diff can't tell
+// "genuinely new, never synced yet" apart from "was synced before, then
+// deleted on another browser" — both look identical (present locally,
+// absent from backend) — so a delete on Browser A kept getting undone by
+// Browser B pushing its still-cached copy back up on every reload.
+// Fix: remember which keys we've successfully synced before. If a local-only
+// item's key is in that "ever synced" set, it was deleted elsewhere — drop
+// it locally instead of re-pushing it. Only truly-new keys get pushed.
+function _loadSyncedKeySet(name){
+  try{ return JSON.parse(localStorage.getItem('swapify-synced-keys-'+name+'-v1')||'[]'); }catch(e){ return []; }
+}
+function _saveSyncedKeySet(name,keys){
+  try{ localStorage.setItem('swapify-synced-keys-'+name+'-v1',JSON.stringify(keys)); }catch(e){}
+}
+function _reconcileLocalOnly(name,localOnly,backendKeys,keyFn){
+  var everSynced={};
+  _loadSyncedKeySet(name).forEach(function(k){ everSynced[k]=true; });
+  var toPush=localOnly.filter(function(item){ return !everSynced[keyFn(item)]; });
+  var toDrop=localOnly.filter(function(item){ return everSynced[keyFn(item)]; });
+  _saveSyncedKeySet(name,backendKeys.concat(toPush.map(keyFn)));
+  return {toPush:toPush,toDrop:toDrop};
+}
+
 var FAVORITES_URL=BACKEND_BASE_URL+'/favorites';
 function syncFavoriteAddToBackend(barcode,name,brand,score,grade){
   if(!currentUser||!currentUser.token||currentUser.localOnly) return;
@@ -408,10 +434,11 @@ async function fetchFavoritesFromBackend(){
     var backendBarcodes={};
     backendList.forEach(function(f){ backendBarcodes[f.barcode]=true; });
     var localOnly=local.filter(function(f){ return !backendBarcodes[f.barcode]; });
-    localOnly.forEach(function(f){ syncFavoriteAddToBackend(f.barcode,f.name,f.brand,f.score,f.grade); });
+    var reconciled=_reconcileLocalOnly('favorites',localOnly,Object.keys(backendBarcodes),function(f){return f.barcode;});
+    reconciled.toPush.forEach(function(f){ syncFavoriteAddToBackend(f.barcode,f.name,f.brand,f.score,f.grade); });
     var merged=backendList.map(function(f){
       return{barcode:f.barcode,name:f.product_name,brand:f.brand,score:f.health_score,grade:f.grade,addedAt:(parseBackendTimestamp(f.added_at)||new Date()).getTime()};
-    }).concat(localOnly);
+    }).concat(reconciled.toPush);
     saveFavoritesList(merged);
     if(favsPanelOpen) renderFavoritesPanel();
     var btn=document.getElementById('favBtn');
@@ -512,13 +539,6 @@ function navWeekly(delta){
   renderWeeklyPanel();
 }
 
-function renderWeeklyPanel(){
-  _renderWeeklyPanelCore(calcDashboardStats());
-  if(currentUser&&currentUser.token&&!currentUser.localOnly){
-    fetchWeeklySummaryFromBackend();
-  }
-}
-
 var WEEKLY_SUMMARY_URL=BACKEND_BASE_URL+'/weekly-summary';
 async function fetchWeeklySummaryFromBackend(){
   try{
@@ -528,158 +548,33 @@ async function fetchWeeklySummaryFromBackend(){
     var synthHistory=(data.daily_trends||[]).map(function(d){
       return{score:d.average_score,timestamp:new Date(d.date+'T12:00:00').getTime()};
     });
-    // Merge backend history with local history so cross-device scans both show
-    var localH=loadHistory();
+    // Merge backend history (covers scans made on OTHER browsers/devices) with
+    // this browser's own local history, restricted to the selected week, so
+    // cross-device scans and this-device scans both show up.
+    var bounds=weekBounds(weeklyOffset);
+    var localH=loadHistory().filter(function(item){
+      var t=new Date(item.timestamp).getTime();
+      return t>=bounds.first.getTime() && t<=bounds.last.getTime();
+    });
     var combinedHistory=localH.concat(synthHistory);
-    _renderWeeklyPanelCore({total:data.total_scans||0,history:combinedHistory});
-    var wpSrc=document.getElementById('weeklyPanel'), wpDst=document.getElementById('weeklyPanelPage');
-    if(wpSrc&&wpDst) wpDst.innerHTML=wpSrc.innerHTML;
+    _renderWeeklyPanelCore({total:data.total_scans||combinedHistory.length,history:combinedHistory});
   }catch(e){ /* offline/unreachable backend — local render stands */ }
 }
-
-function _renderWeeklyPanelCore(stats){
-  var panel=document.getElementById('weeklyPanel');
-
-  // Build the 7 days for the selected week
-  var today=new Date(); today.setHours(0,0,0,0);
-  var weekEnd=new Date(today.getTime()+weeklyOffset*7*86400000);
-  var days=[];
-  for(var i=6;i>=0;i--){
-    var d=new Date(weekEnd.getTime()-i*86400000);
-    d.setHours(0,0,0,0);
-    days.push({date:d,label:d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}),scans:[],avg:null});
-  }
-
-  var weekStartMs=days[0].date.getTime();
-  var weekEndMs=days[6].date.getTime()+86399999;
-
-  var totalScansInWindow=0;
-  (stats.history||[]).forEach(function(item){
-    if(!item) return;
-    var itemDate=parseBackendTimestamp(item.timestamp)||(item.timestamp?new Date(item.timestamp):null);
-    if(!itemDate||isNaN(itemDate.getTime())) return;
-    itemDate.setHours(0,0,0,0);
-    var itemMs=itemDate.getTime();
-
-    if(itemMs>=weekStartMs && itemMs<=weekEndMs){
-      totalScansInWindow++;
-      var scoreVal=typeof item.score==='number'?item.score:(typeof item.health_score==='number'?item.health_score:5);
-      var dayObj=days.find(function(x){
-        return x.date.getFullYear()===itemDate.getFullYear() &&
-               x.date.getMonth()===itemDate.getMonth() &&
-               x.date.getDate()===itemDate.getDate();
-      });
-      if(dayObj && !isNaN(scoreVal)) dayObj.scans.push(scoreVal);
-    }
-  });
-
-  days.forEach(function(d){
-    var validScans=d.scans.filter(function(s){ return typeof s==='number' && !isNaN(s); });
-    if(validScans.length){
-      d.avg=Math.round(validScans.reduce(function(a,b){return a+b;},0)/validScans.length*10)/10;
-    }
-  });
-
-  var canGoNext=weeklyOffset<0;
-  var weekPeriodLabel=days[0].label+' – '+days[6].label;
-
-  var navHTML='<div class="monthly-month-nav">'
-    +'<button class="month-nav-btn" onclick="navWeekly(-1)" title="Previous week">‹</button>'
-    +'<span class="monthly-month-label" style="min-width:130px;">'+weekPeriodLabel+'</span>'
-    +'<button class="month-nav-btn" onclick="navWeekly(1)" '+(canGoNext?'':'disabled')+' title="Next week">›</button>'
-    +'</div>';
-
-  if(totalScansInWindow===0 && (!stats.history || !stats.history.length)){
-    panel.innerHTML='<div class="weekly-section"><div class="weekly-header"><div class="weekly-title">📊 Weekly Health Summary</div>'+navHTML+'</div><div class="weekly-empty">No scans recorded for '+weekPeriodLabel+'. Scan some products to build this week\'s report!</div></div>';
-    return;
-  }
-
-  var scansThisWeek=totalScansInWindow||stats.total;
-  var avgScores=days.filter(function(d){return d.avg!==null && !isNaN(d.avg);}).map(function(d){return d.avg;});
-  var weekAvg=avgScores.length?Math.round(avgScores.reduce(function(a,b){return a+b;},0)/avgScores.length*10)/10:null;
-  var bestDay=days.reduce(function(best,d){return(d.avg!==null&&!isNaN(d.avg)&&(best.avg===null||d.avg>best.avg))?d:best;},{avg:null});
-
-  // Trend: compare first half vs second half of week
-  var firstHalf=days.slice(0,3).filter(function(d){return d.avg!==null&&!isNaN(d.avg);}).map(function(d){return d.avg;});
-  var secondHalf=days.slice(4,7).filter(function(d){return d.avg!==null&&!isNaN(d.avg);}).map(function(d){return d.avg;});
-  var firstAvg=firstHalf.length?firstHalf.reduce(function(a,b){return a+b;},0)/firstHalf.length:null;
-  var secondAvg=secondHalf.length?secondHalf.reduce(function(a,b){return a+b;},0)/secondHalf.length:null;
-  var trendHTML='';
-  if(firstAvg!==null&&secondAvg!==null){
-    var diff=Math.round((secondAvg-firstAvg)*10)/10;
-    if(diff>0.3) trendHTML='<div class="weekly-trend"><div class="trend-icon">📈</div><div class="trend-text">Your scores are <strong>improving</strong> this week (+'+diff+' pts). Keep going!</div></div>';
-    else if(diff<-0.3) trendHTML='<div class="weekly-trend"><div class="trend-icon">📉</div><div class="trend-text">Scores have <strong>dipped</strong> lately ('+diff+' pts). Try swapping for higher-rated alternatives.</div></div>';
-    else trendHTML='<div class="weekly-trend"><div class="trend-icon">➡️</div><div class="trend-text">Your scores are <strong>consistent</strong> this week. Staying steady!</div></div>';
-  }
-
-  // SVG flowchart / bar chart
-  var svgW=580, svgH=140, padL=32, padR=16, padB=30, padT=16;
-  var chartW=svgW-padL-padR, chartH=svgH-padB-padT;
-  var barW=Math.floor(chartW/7)-6;
-  var maxScore=10;
-  var points=[], barsHTML='', labelsHTML='', scoresHTML='';
-  days.forEach(function(day,i){
-    var x=padL+i*(chartW/7)+(chartW/7)/2;
-    var validAvg=(day.avg!==null && !isNaN(day.avg))?day.avg:null;
-    var barH=validAvg!==null?Math.round((validAvg/maxScore)*chartH):0;
-    var y=padT+chartH-barH;
-    var fillColor=validAvg===null?'none':validAvg>=7?'#C0FF33':validAvg>=5?'#ffd166':'#ff6b6b';
-    if(validAvg!==null){
-      barsHTML+='<rect x="'+(x-barW/2)+'" y="'+y+'" width="'+barW+'" height="'+barH+'" rx="4" fill="'+fillColor+'" opacity="0.85"/>';
-      points.push({x:x,y:y});
-      scoresHTML+='<text x="'+x+'" y="'+(y-4)+'" text-anchor="middle" font-size="9" fill="var(--text-muted)" font-family="DM Mono, monospace">'+validAvg+'</text>';
-    }
-    labelsHTML+='<text x="'+x+'" y="'+(svgH-6)+'" text-anchor="middle" font-size="9" fill="var(--gray)" font-family="DM Mono, monospace">'+day.label+'</text>';
-  });
-
-  // Line connecting bar tops
-  var lineHTML='';
-  if(points.length>=2){
-    var pathD='M '+points[0].x+' '+points[0].y;
-    for(var p=1;p<points.length;p++){
-      var cx=(points[p-1].x+points[p].x)/2;
-      pathD+=' C '+cx+' '+points[p-1].y+' '+cx+' '+points[p].y+' '+points[p].x+' '+points[p].y;
-    }
-    lineHTML='<path d="'+pathD+'" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 2" opacity="0.6"/>';
-    points.forEach(function(pt){
-      lineHTML+='<circle cx="'+pt.x+'" cy="'+pt.y+'" r="4" fill="var(--accent)" opacity="0.8"/>';
-    });
-  }
-  var gridHTML='';
-  [2,4,6,8,10].forEach(function(v){
-    var gy=padT+chartH-(v/maxScore)*chartH;
-    gridHTML+='<line x1="'+padL+'" y1="'+gy+'" x2="'+(svgW-padR)+'" y2="'+gy+'" stroke="var(--border)" stroke-width="1" opacity="0.5"/>';
-    gridHTML+='<text x="'+(padL-4)+'" y="'+(gy+3)+'" text-anchor="end" font-size="8" fill="var(--gray)" font-family="DM Mono, monospace">'+v+'</text>';
-  });
-
-  var statClass=weekAvg===null?'':weekAvg>=7?'stat-good':weekAvg>=5?'stat-warn':'stat-bad';
-  panel.innerHTML='<div class="weekly-section">'
-    +'<div class="weekly-header"><div class="weekly-title">📊 Weekly Health Summary</div>'+navHTML+'</div>'
-    +'<div class="weekly-stats-row">'
-    +'<div class="weekly-stat"><div class="weekly-stat-num">'+scansThisWeek+'</div><div class="weekly-stat-lbl">Scans</div></div>'
-    +'<div class="weekly-stat '+statClass+'"><div class="weekly-stat-num">'+(weekAvg!==null?weekAvg:'—')+'</div><div class="weekly-stat-lbl">Avg Score</div></div>'
-    +'<div class="weekly-stat"><div class="weekly-stat-num">'+(bestDay.avg!==null?bestDay.avg+'<span style="font-size:0.7rem;font-weight:400;color:var(--text-muted)"> / 10</span>':'—')+'</div><div class="weekly-stat-lbl">Best Day</div></div>'
-    +'</div>'
-    +'<div class="chart-label">HEALTH SCORE BY DAY</div>'
-    +'<div class="flowchart-wrap">'
-    +'<svg class="flowchart-svg" viewBox="0 0 '+svgW+' '+svgH+'" xmlns="http://www.w3.org/2000/svg">'
-    +gridHTML+barsHTML+lineHTML+scoresHTML+labelsHTML
-    +'</svg></div>'
-    +trendHTML
-    +'</div>';
-
-  var wpSrc=document.getElementById('weeklyPanel'), wpDst=document.getElementById('weeklyPanelPage');
-  if(wpSrc&&wpDst&&wpSrc!==wpDst) wpDst.innerHTML=wpSrc.innerHTML;
-}
+/* The old first renderWeeklyPanel()/_renderWeeklyPanelCore() body used to
+   continue here, but it was dead code: two functions named renderWeeklyPanel()
+   existed in this file, and the later declaration (the bar-chart UI, further
+   down) always silently won — so this backend fetch never ran and the weekly
+   report was showing this browser's local scans only, which is why it never
+   matched across browsers even though Monthly (no such duplicate) did. */
 
 /* ══════════════════════════════════════════════════════
    AUTH
    ══════════════════════════════════════════════════════ */
 var AUTH_KEY='swapify-auth-v1';
 var currentUser=null;
-function loadAuth(){ 
-  try{currentUser=JSON.parse(localStorage.getItem(AUTH_KEY)||'null');}catch(e){currentUser=null;} 
-  renderHeaderAuth(); 
+function loadAuth(){
+  try{currentUser=JSON.parse(localStorage.getItem(AUTH_KEY)||'null');}catch(e){currentUser=null;}
+  renderHeaderAuth();
   if(currentUser&&currentUser.token&&!currentUser.localOnly){
     setTimeout(function(){ importLocalScanHistory(true); }, 500);
   }
@@ -1059,7 +954,7 @@ function savePrefs(){
   if(lastScannedProduct) loadAlternatives(lastScannedProduct);
   showToast('Preferences saved!','success');
 }
-function resetPrefs(){ userPrefs={}; localStorage.removeItem(PREF_KEY); document.querySelectorAll('#prefOverlay .pref-toggle').forEach(function(el){el.classList.remove('active');}); renderPrefStrip(); showToast('Preferences reset.','info'); }
+function resetPrefs(){ userPrefs={}; localStorage.removeItem(PREF_KEY); document.querySelectorAll('#prefOverlay .pref-toggle').forEach(function(el){el.classList.remove('active');}); renderPrefStrip(); syncPreferencesToBackend(); showToast('Preferences reset.','info'); }
 function activePrefsArray(){ return Object.keys(userPrefs).filter(function(k){return userPrefs[k];}); }
 function renderPrefStrip(){
   var active=activePrefsArray(), strip=document.getElementById('activePrefStrip'), chips=document.getElementById('activePrefChips');
@@ -2536,6 +2431,8 @@ async function fetchCompareListFromBackend(){
     var backendBarcodes={};
     backendList.forEach(function(it){ backendBarcodes[it.barcode]=true; });
     var localOnly=local.filter(function(it){ return !backendBarcodes[it.barcode]; });
+    var reconciled=_reconcileLocalOnly('compare',localOnly,Object.keys(backendBarcodes),function(it){return it.barcode;});
+    localOnly=reconciled.toPush;
     // Respect the 4-item cap when merging so a device that was offline with
     // a full list doesn't silently exceed it once reconnected.
     var room=Math.max(0,MAX_COMPARE-backendList.length);
@@ -3935,7 +3832,13 @@ function calcWeeklyStats(offset) {
 }
 
 function renderWeeklyPanel() {
-  var stats = calcWeeklyStats(weeklyOffset);
+  _renderWeeklyPanelCore(calcWeeklyStats(weeklyOffset));
+  if (currentUser && currentUser.token && !currentUser.localOnly) {
+    fetchWeeklySummaryFromBackend();
+  }
+}
+
+function _renderWeeklyPanelCore(stats) {
   var panel = document.getElementById('weeklyPanel');
   if (!panel) return;
 
@@ -4495,6 +4398,8 @@ async function fetchMySwapsFromBackend(){
     var backendPairs={};
     backendList.forEach(function(s){ backendPairs[s.original_barcode+'|'+s.alt_barcode]=true; });
     var localOnly=local.filter(function(s){ return !backendPairs[s.originalBarcode+'|'+s.altBarcode]; });
+    var reconciled=_reconcileLocalOnly('my-swaps',localOnly,Object.keys(backendPairs),function(s){return s.originalBarcode+'|'+s.altBarcode;});
+    localOnly=reconciled.toPush;
     localOnly.forEach(function(s){ syncMySwapAddToBackend(s); });
     var merged=backendList.map(function(s){
       return{
@@ -5074,26 +4979,13 @@ function buildCategoryIndex(){
     });
   }
 
-  // 3. User History & Global Database items
-  var h=loadHistory();
-  if(Array.isArray(h)){
-    h.forEach(function(item){
-      var cat=item.category||detectCategory(item.name||'');
-      cat=(cat||'other').trim().toLowerCase();
-      if(!index[cat]) index[cat]=[];
-      if(!index[cat].some(function(i){return i.barcode===item.barcode;})){
-        index[cat].push({
-          barcode:item.barcode,
-          name:item.name||'Unknown Product',
-          brand:item.brand||'Global DB',
-          score:item.score,
-          grade:item.grade||'C',
-          source:'Global DB'
-        });
-        totalFound++;
-      }
-    });
-  }
+  // NOTE: this used to also fold in the current browser's own local scan
+  // history (loadHistory()) as a 3rd source. That's what caused "Browse by
+  // Category" to show different totals in different browsers on the same
+  // account — each browser only knows about the products IT scanned, so it
+  // was injecting a different, browser-specific set of extra items into what
+  // should be one shared catalog (CSV + backend). Removed: this index should
+  // only reflect the shared product database, not personal scan history.
 
   if(totalFound > 0){
     _categoryIndexCache=index;
@@ -6599,16 +6491,67 @@ async function submitResetPassword() {
 /* ─────────────────────────────────────
    TASK 2C: CONTINUE WITH GOOGLE
    ───────────────────────────────────── */
+var _googleAuthPopup = null;
 function loginWithGoogle() {
-  /* Redirect to backend Google OAuth endpoint.
-     Dhruv will create GET /auth/google which initiates the OAuth 2.0 flow.
-     If the backend isn't ready yet, show a friendly message. */
+  /* Open the backend's Google OAuth flow in a popup (flow=popup) and pass our
+     own origin as return_to. The backend's callback page then postMessage()s
+     the result back to us (see the 'message' listener registered below) —
+     it never navigates our own tab away, and never lands on a bare fallback
+     page because both `flow` and `return_to` are always supplied now. */
   try {
-    window.location.href = BACKEND_BASE_URL + '/auth/google';
+    var url = BACKEND_BASE_URL + '/auth/google?flow=popup&return_to=' + encodeURIComponent(window.location.origin);
+    _googleAuthPopup = window.open(url, 'swapify-google-auth', 'width=480,height=640');
+    if (!_googleAuthPopup) {
+      // Popup blocked — fall back to a normal full-page redirect so sign-in
+      // still works; return_to still ensures the callback can find its way
+      // back here instead of stalling on the bare fallback page.
+      window.location.href = url;
+    }
   } catch (e) {
     showToast('Google login is being set up — please try again later.', 'info');
   }
 }
+
+// The backend's OAuth popup page posts {source:'swapify-oauth', access_token, ...}
+// (or {source:'swapify-oauth', error}) back to whichever origin we passed as
+// return_to, i.e. us. event.origin here is the SENDER's origin (the popup,
+// on BACKEND_BASE_URL), which is what we check to make sure this didn't come
+// from some other frame/tab.
+window.addEventListener('message', async function(event) {
+  if (!event.data || event.data.source !== 'swapify-oauth') return;
+  try {
+    var backendOrigin = new URL(BACKEND_BASE_URL).origin;
+    if (event.origin !== backendOrigin) return;
+  } catch (e) { /* ignore malformed BACKEND_BASE_URL, fall through */ }
+  if (_googleAuthPopup) { try { _googleAuthPopup.close(); } catch (e) {} _googleAuthPopup = null; }
+  var data = event.data;
+  if (data.error) {
+    showAuthError ? showAuthError('Google sign-in failed: ' + data.error) : showToast('Google sign-in failed.', 'error');
+    return;
+  }
+  if (!data.access_token) return;
+  try {
+    var profile = await fetchBackendProfile(data.access_token);
+    saveAuth({
+      name: data.username || (profile && profile.username) || (data.email ? data.email.split('@')[0] : 'Swapify user'),
+      email: data.email,
+      token: data.access_token,
+      userId: data.user_id || (profile && profile.id)
+    });
+    await fetchPreferencesFromBackend();
+    await fetchFavoritesFromBackend();
+    await fetchMySwapsFromBackend();
+    await fetchShoppingListFromBackend();
+    await fetchCompareListFromBackend();
+    syncBadgesFromBackend();
+    if (!localStorage.getItem(LOCAL_HISTORY_IMPORTED_KEY)) importLocalScanHistory(true);
+    closeAuthModal();
+    openProfilePanel();
+    showToast('Signed in with Google.', 'success');
+  } catch (e) {
+    showToast('Signed in, but could not load your data. Try reloading.', 'info');
+  }
+});
 
 
 /* ─────────────────────────────────────
