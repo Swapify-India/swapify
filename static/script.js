@@ -6325,6 +6325,75 @@ if (_origScanProduct) {
    Used by any panel that fetches before it can render (recommendations,
    leaderboard, challenges, reviews) instead of a plain "Loading…" line.
    ══════════════════════════════════════════════════════ */
+function openReportMissingModal(barcode) {
+  /* Auth is OPTIONAL on the backend — allow unauthenticated reports */
+  clearModalStatus('reportMissingStatus');
+  var barcodeInput = document.getElementById('reportMissingBarcode');
+  var nameInput = document.getElementById('reportMissingName');
+  var brandInput = document.getElementById('reportMissingBrand');
+  var commentInput = document.getElementById('reportMissingComment');
+  if (barcodeInput) barcodeInput.value = barcode || '';
+  if (nameInput) nameInput.value = '';
+  if (brandInput) brandInput.value = '';
+  if (commentInput) commentInput.value = '';
+  document.getElementById('reportMissingModalOverlay').classList.add('active');
+}
+function closeReportMissingModal() {
+  document.getElementById('reportMissingModalOverlay').classList.remove('active');
+}
+async function submitMissingReport() {
+  var barcode = (document.getElementById('reportMissingBarcode') || {}).value.trim();
+  var name = (document.getElementById('reportMissingName') || {}).value.trim();
+  var brand = (document.getElementById('reportMissingBrand') || {}).value.trim();
+  var comment = (document.getElementById('reportMissingComment') || {}).value.trim();
+
+  /* Backend requires barcode (not optional in MissingReport model) */
+  if (!barcode) {
+    setModalStatus('reportMissingStatus', 'Barcode is required to report a missing product.', 'error');
+    return;
+  }
+
+  /* Backend model only accepts: barcode, product_name, comment.
+     Fold brand into the comment field so it's not lost. */
+  var fullComment = '';
+  if (brand) fullComment += 'Brand: ' + brand + '. ';
+  if (comment) fullComment += comment;
+  fullComment = fullComment.trim() || null;
+
+  setModalStatus('reportMissingStatus', 'Submitting report…', 'success');
+
+  try {
+    var headers = { 'Content-Type': 'application/json' };
+    /* Include auth headers if logged in (optional — backend accepts either) */
+    if (isReallyLoggedIn()) Object.assign(headers, getAuthHeaders());
+    var res = await fetch(BACKEND_BASE_URL + '/report-missing', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        barcode: barcode,
+        product_name: name || null,
+        comment: fullComment
+      })
+    });
+    if (!res.ok) {
+      if (isReallyLoggedIn() && handleAuthExpiry(res)) return;
+      var errData = {};
+      try { errData = await res.json(); } catch(e) {}
+      setModalStatus('reportMissingStatus', errData.error || errData.detail || 'Could not submit report. Please try again.', 'error');
+      return;
+    }
+    var respData = {};
+    try { respData = await res.json(); } catch(e) {}
+    var msg = respData.already_reported
+      ? '\u2139 This barcode was already reported — thanks for confirming!'
+      : '\u2713 Thanks! We\u2019ve logged this product for review.';
+    setModalStatus('reportMissingStatus', msg, 'success');
+    showToast('Missing product reported successfully!', 'success');
+    setTimeout(function() { closeReportMissingModal(); }, 1800);
+  } catch (e) {
+    setModalStatus('reportMissingStatus', 'Backend unreachable — could not submit. Please try again later.', 'error');
+  }
+}
 function skeletonRows(n){
   var rows='';
   for(var i=0;i<(n||3);i++){
@@ -6541,73 +6610,6 @@ function loginWithGoogle() {
   }
 }
 
-/* ─────────────────────────────────────
-   TASK 3: REPORT MISSING PRODUCT — MODAL
-   (Replaces the old prompt()-based pnfReportMissing)
-   ───────────────────────────────────── */
-function openReportMissingModal(barcode) {
-  if (!isReallyLoggedIn()) {
-    showToast('Please log in first to report a missing product.', 'error');
-    openAuthModal();
-    return;
-  }
-  clearModalStatus('reportMissingStatus');
-  var barcodeInput = document.getElementById('reportMissingBarcode');
-  var nameInput = document.getElementById('reportMissingName');
-  var brandInput = document.getElementById('reportMissingBrand');
-  var commentInput = document.getElementById('reportMissingComment');
-  if (barcodeInput) barcodeInput.value = barcode || '';
-  if (nameInput) nameInput.value = '';
-  if (brandInput) brandInput.value = '';
-  if (commentInput) commentInput.value = '';
-  document.getElementById('reportMissingModalOverlay').classList.add('active');
-}
-function closeReportMissingModal() {
-  document.getElementById('reportMissingModalOverlay').classList.remove('active');
-}
-async function submitMissingReport() {
-  var barcode = (document.getElementById('reportMissingBarcode') || {}).value.trim();
-  var name = (document.getElementById('reportMissingName') || {}).value.trim();
-  var brand = (document.getElementById('reportMissingBrand') || {}).value.trim();
-  var comment = (document.getElementById('reportMissingComment') || {}).value.trim();
-
-  if (!barcode && !name) {
-    setModalStatus('reportMissingStatus', 'Please provide at least a barcode or product name.', 'error');
-    return;
-  }
-
-  setModalStatus('reportMissingStatus', 'Submitting report…', 'success');
-
-  try {
-    var res = await fetch(BACKEND_BASE_URL + '/report-missing', {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders()),
-      body: JSON.stringify({
-        barcode: barcode || null,
-        product_name: name || null,
-        brand: brand || null,
-        comment: comment || null
-      })
-    });
-    if (!res.ok) {
-      if (handleAuthExpiry(res)) return;
-      var errData = {};
-      try { errData = await res.json(); } catch(e) {}
-      setModalStatus('reportMissingStatus', errData.error || 'Could not submit report. Please try again.', 'error');
-      return;
-    }
-    setModalStatus('reportMissingStatus', '✓ Thanks! We\u2019ve logged this product for review.', 'success');
-    showToast('Missing product reported successfully!', 'success');
-    setTimeout(function() { closeReportMissingModal(); }, 1800);
-  } catch (e) {
-    setModalStatus('reportMissingStatus', 'Backend unreachable — could not submit. Please try again later.', 'error');
-  }
-}
-
-/* Wire the old pnfReportMissing to use the new modal instead of prompt() */
-function pnfReportMissing(barcode) {
-  openReportMissingModal(barcode);
-}
 
 /* ─────────────────────────────────────
    TASK 5: SEARCH — DISPLAY OPEN FOOD FACTS
@@ -6639,82 +6641,80 @@ renderSearchSuggestions = function(results) {
   box.classList.add('visible');
 };
 
-/* Enhance runAutocompleteSearch to also query Open Food Facts */
+/* Enhance runAutocompleteSearch — the backend /search/autocomplete already
+   includes Open Food Facts results (source: "openfoodfacts") with score/grade,
+   so we use those directly instead of making a redundant client-side OFF query.
+   Only falls back to local CSV + client-side OFF if the backend is unreachable. */
 var _origRunAutocompleteSearch = runAutocompleteSearch;
 runAutocompleteSearch = async function(query) {
   var mySeq = ++_searchRequestSeq;
-  var dbResults = null;
-  var offResults = [];
+  var results = null;
 
-  /* 1. Try our backend autocomplete */
+  /* 1. Try our backend autocomplete (already includes OFF results) */
   try {
-    var res = await fetch(AUTOCOMPLETE_URL + '?q=' + encodeURIComponent(query) + '&limit=8');
+    var res = await fetch(AUTOCOMPLETE_URL + '?q=' + encodeURIComponent(query) + '&limit=10');
     if (res.ok) {
       var data = await res.json();
       if (Array.isArray(data.suggestions)) {
-        dbResults = data.suggestions.map(function(r) {
-          var enrich = (csvDBLoaded && csvDB[r.barcode]) ? (function() {
+        results = data.suggestions.map(function(r) {
+          /* Backend returns source as "database" or "openfoodfacts".
+             It also returns score/grade for OFF rows now, so prefer those
+             over client-side scoring. Only enrich from CSV if backend
+             didn't provide a score. */
+          var hasBackendScore = typeof r.score === 'number';
+          var enrich = (!hasBackendScore && csvDBLoaded && csvDB[r.barcode]) ? (function() {
             var norm = normBackend(csvDB[r.barcode]);
             return calculateScore(norm, '');
           })() : null;
+          /* Map backend source names to our badge names */
+          var src = (r.source === 'openfoodfacts') ? 'off' : 'db';
           return {
             barcode: r.barcode,
             name: r.product_name,
             brand: r.brand,
-            score: enrich ? enrich.score : undefined,
-            grade: enrich ? enrich.grade : undefined,
-            source: 'db'
+            score: hasBackendScore ? r.score : (enrich ? enrich.score : undefined),
+            grade: hasBackendScore ? r.grade : (enrich ? enrich.grade : undefined),
+            source: src
           };
         });
       }
     }
-  } catch (e) { /* fall through */ }
-
-  /* 2. Try Open Food Facts search API */
-  try {
-    var offRes = await fetch('https://world.openfoodfacts.org/cgi/search.pl?search_terms=' + encodeURIComponent(query) + '&search_simple=1&action=process&json=1&page_size=5');
-    if (offRes.ok) {
-      var offData = await offRes.json();
-      if (offData.products && offData.products.length) {
-        offResults = offData.products.map(function(p) {
-          return {
-            barcode: p.code || p._id || '',
-            name: p.product_name || p.product_name_en || 'Unknown',
-            brand: p.brands || '',
-            score: undefined,
-            grade: undefined,
-            source: 'off'
-          };
-        }).filter(function(p) { return p.barcode && p.name && p.name !== 'Unknown'; });
-      }
-    }
-  } catch (e) { /* Open Food Facts unavailable, skip */ }
+  } catch (e) { /* fall through to local fallback */ }
 
   if (mySeq !== _searchRequestSeq) return;
 
-  /* 3. Fallback to local CSV if backend failed */
-  if (!dbResults) {
-    dbResults = [];
+  /* 2. Fallback: local CSV + client-side OFF if backend is unreachable */
+  if (!results) {
+    results = [];
     if (csvDBLoaded) {
       var q = query.toLowerCase();
-      dbResults = Object.keys(csvDB).filter(function(bc) {
+      results = Object.keys(csvDB).filter(function(bc) {
         return (csvDB[bc].product_name || '').toLowerCase().indexOf(q) !== -1;
       }).slice(0, 8).map(function(bc) {
-        var prod = csvDB[bc], norm = normBackend(prod), res = calculateScore(norm, '');
-        return { barcode: bc, name: prod.product_name, brand: prod.brand, score: res.score, grade: res.grade, source: 'db' };
+        var prod = csvDB[bc], norm = normBackend(prod), scr = calculateScore(norm, '');
+        return { barcode: bc, name: prod.product_name, brand: prod.brand, score: scr.score, grade: scr.grade, source: 'db' };
       });
     }
+    /* Client-side OFF fallback only when backend is down */
+    try {
+      var offRes = await fetch('https://world.openfoodfacts.org/cgi/search.pl?search_terms=' + encodeURIComponent(query) + '&search_simple=1&action=process&json=1&page_size=5');
+      if (offRes.ok) {
+        var offData = await offRes.json();
+        var seenBc = {};
+        results.forEach(function(r) { seenBc[r.barcode] = true; });
+        if (offData.products && offData.products.length) {
+          offData.products.forEach(function(p) {
+            var bc = p.code || p._id || '';
+            var nm = p.product_name || p.product_name_en || '';
+            if (bc && nm && nm !== 'Unknown' && !seenBc[bc]) {
+              seenBc[bc] = true;
+              results.push({ barcode: bc, name: nm, brand: p.brands || '', score: undefined, grade: undefined, source: 'off' });
+            }
+          });
+        }
+      }
+    } catch (e) { /* OFF unreachable too */ }
   }
 
-  /* 4. Merge: DB first, then OFF (deduped by barcode) */
-  var seenBarcodes = {};
-  var merged = [];
-  dbResults.forEach(function(r) {
-    if (!seenBarcodes[r.barcode]) { seenBarcodes[r.barcode] = true; merged.push(r); }
-  });
-  offResults.forEach(function(r) {
-    if (!seenBarcodes[r.barcode]) { seenBarcodes[r.barcode] = true; merged.push(r); }
-  });
-
-  renderSearchSuggestions(merged.slice(0, 10));
+  renderSearchSuggestions(results.slice(0, 10));
 };

@@ -1,5 +1,194 @@
 # Swapify Backend Documentation
 
+## 31 July Update — Password reset + Google sign-in
+
+Three new auth features, plus the diagnostics that make each of them provably
+working rather than silently broken. All in [`src/app.py`](src/app.py) and
+[`weekly_digest.py`](weekly_digest.py); `python test_scoring_spec.py` still passes
+100/100, and `test_api.sh` / `test_api.ps1` / `test_live_api.ps1` all gained
+permanent assertions (sections `105a`–`105o`, `128a`–`128k`).
+
+**[`POST /forgot-password`](#post-forgot-password)** emails a single-use reset link.
+
+- The response is **identical for a registered and an unregistered address** — a
+  reset form that says "no such user" is how account lists get harvested.
+- Only a **SHA-256 hash** of the token is stored (peppered with `SECRET_KEY`), so a
+  leaked database still cannot be used to take over accounts.
+- Tokens are single-use and expire in `PASSWORD_RESET_TTL_MINUTES` (default 30).
+  Requesting a new link, or using one, invalidates every other outstanding link.
+- Throttled to `FORGOT_PASSWORD_MAX_PER_HOUR` per address (×4 per caller IP).
+
+**[`POST /reset-password`](#post-reset-password)** consumes the token and sets the
+new password, with [`GET /reset-password/validate`](#get-reset-password-validate) to
+check a link before showing the form and [`GET /reset-password`](#get-reset-password)
+serving the page the emailed link opens — so password reset works with **no frontend
+deployed**, since the web app is hosted separately from this API.
+
+**[Google OAuth 2.0](#google-oauth-20-sign-in)** — [`GET /auth/google/login`](#get-authgooglelogin)
+starts the authorization-code flow and [`GET /auth/google/callback`](#get-authgooglecallback)
+finishes it, issuing the **same JWT `POST /login` returns**, so every existing
+authenticated endpoint works unchanged. [`POST /auth/google/token`](#post-authgoogletoken)
+covers clients that already hold an ID token (Google Identity Services, mobile SDKs);
+those are signature-verified, since they arrive from an untrusted source. Signing in
+with a Google address that already has a password account **links** the two instead
+of creating a duplicate row that would strand the user's scan history. State is
+HMAC-signed (CSRF) and post-sign-in redirects are restricted to already-trusted
+origins (no open redirect handing out tokens).
+
+**Two bugs found and fixed while testing:**
+
+- **`.env` mail settings were never applied.** `app.py` imported `weekly_digest`
+  ~170 lines *before* it called `load_dotenv()`, so every SMTP/SendGrid setting was
+  read from the bare process environment and ignored. `load_dotenv()` now runs first
+  and `weekly_digest` resolves its config per send. Symptom: mail configuration
+  appeared to do nothing.
+- **USDA answered barcode lookups with unrelated records.** `/foods/search` is a
+  full-text search, not a GTIN lookup, and the code assumed "a barcode match is
+  exact and needs no guard". Searching `0000000000000` returned the paper *"A
+  comprehensive characterization of phenolics, amino acids…"*, which was scored and
+  **written into `products` as a real product**. A barcode hit must now carry that
+  exact `gtinUpc`.
+
+**Diagnostics** (the reason each feature can be shown to work):
+[`GET /auth/email/status`](#get-authemailstatus) reports which mail provider is
+actually live — and `?probe=true` (admin) opens a real SMTP session.
+[`GET /autofill/status`](#get-autofillstatus) reports which auto-fill sources and
+search providers are reachable. `GET /health` now carries `email_provider` and
+`google_oauth`.
+
+> **Setup note — Gmail SMTP needs an App Password.** Verified live against
+> `smtp.gmail.com:587`: the account password is rejected with
+> `534 5.7.9 Application-specific password required`. Generate a 16-character App
+> Password at <https://myaccount.google.com/apppasswords> and set it as
+> `SMTP_PASSWORD`. Until then the app stays in outbox dry-run mode **and says so**
+> rather than accepting reset requests whose mail goes nowhere.
+
+## 30 July Update — Auto-fill, Google net, uncapped Categories
+
+Three reviewer tasks, all in [`src/app.py`](src/app.py) (+ a new bundled dataset at
+`data/ifct2017.json`). `python test_scoring_spec.py` still passes 100/100.
+
+**Task 1 — Auto-fill pipeline.** Products with missing data got none because two of
+the five sources could not contribute at all:
+
+- **IFCT was a dead no-op** — no dataset ever shipped, so the step was skipped
+  silently on every request. A curated Indian generic-foods table now ships, and
+  matching is relevance-gated so a generic record can't answer for a branded pack.
+- **The safety net was starved of time** — it runs last and shared a 6 s budget with
+  Open Food Facts and USDA, so it usually started with under a second left. It now
+  has its own budget (`SWAPIFY_WEB_NET_BUDGET`, 12 s). Ordinary scans are unchanged
+  (in-DB **0.1 s**, cached **0.01 s**, first OFF fetch **~0.9 s**, total miss ~2.5 s
+  then negative-cached).
+- **New [`GET /product/by-name/{name}`](#get-product-by-name)** runs the same chain
+  from a name, because a product no barcode database indexes could not previously be
+  looked up at all — which is exactly the class of product that shows no data.
+- **New `?refresh=true`** on both product endpoints forces a re-resolve past the
+  caches and the enrichment cooldown.
+
+**Task 2 — [Google safety net](#google-web-safety-net).** It required a **paid
+SerpApi key that was never configured**, so every product reaching it fell through
+to a rate-limited free LLM: the net existed but never fetched anything. It now runs
+a provider chain (SerpApi → **Google Programmable Search** → DuckDuckGo → Bing →
+Mojeek) whose last entries need no key, extracts nutrition from both result snippets
+and fetched pages, and rescales per serving size — reading a "200 kcal per 500 g
+bottle" panel as per-100g was a 2.5× error straight into the catalogue. Values are
+sanity-checked, relevance-gated, flagged `estimated`, and carry the `source_urls`
+they came from. **Set `GOOGLE_API_KEY` + `GOOGLE_CSE_ID`** (free, 100 queries/day)
+for dependable behaviour; the keyless engines throttle scripted access.
+
+**Task 3 — [Categories return everything](#31-product-categories-api-feature-4).**
+Two bugs: the `categories_tags` filter was being passed as a request parameter that
+Search-a-licious **accepts and ignores** (a request for `en:biscuits` returned grated
+carrots), and the advertised product count was `SWAPIFY_CATEGORY_EXTERNAL_LIMIT` —
+our own 200-per-category fetch cap — rather than anything about Open Food Facts. The
+filter moved into the Lucene `q`, counts are now OFF's real per-category totals, and
+`limit`/`offset` page straight into OFF instead of paginating a pre-fetched buffer.
+**Measured: 385 → 181,105 browsable products**, `offset=9995` still serves results.
+
+## 27 July Update — Reviewer Fixes
+
+Nine reviewer-reported issues, all in [`src/app.py`](src/app.py) +
+[`static/script.js`](static/script.js). Verified via TestClient against a temp DB
+copy; `python test_scoring_spec.py` still passes 100/100.
+
+1. **Scanner too slow (20 s+ → < 5 s).** The whole external auto-fill chain is now
+   bounded by one wall-clock budget (`SWAPIFY_AUTOFILL_BUDGET`, 6 s), the slow AI
+   estimate is capped separately (4 s), OFF/USDA timeouts are lowered, unknown
+   barcodes are cached as misses (instant `404` on rescan), and a partially-filled
+   product isn't re-fetched every scan. In-DB **0.1 s**, cached **0.01 s**, first
+   external fetch **< 4.2 s**. See [Auto-Fill Pipeline](#1b-auto-fill-missing-data-pipeline-database-first).
+2. **"Unknown Product" name.** A product resolved from OFF/USDA now always gets a
+   real name (brand fallback), never the literal placeholder.
+3. **Auto-fill actually fills.** Added an **Open Food Facts name search** (so packs
+   not indexed by their scanned barcode still resolve) and a **relevance guard** that
+   rejects garbage fuzzy matches (USDA answering *"Amul Fruit N Nut"* with
+   *"McDonald's Fruit'n Yogurt Parfait"*).
+4. **Google/AI safety net** is bounded + logged, no longer hangs a scan.
+5. **AI chat uses the DB.** Fixed the name lookup (*"Kellogg's Multigrain Chocos"* →
+   **"Chocos cereal"**) and the fast-path reply now returns `product_name`/`score`/
+   `grade`/`ingredient_flags`. See [Product lookup by name](#product-lookup-by-name-fix-3b).
+6. **Categories include Open Food Facts.** [`/products/by-category`](#31-product-categories-api-feature-4)
+   merges OFF products (`external_count` in the response).
+7. **Search includes Open Food Facts.** [`/search`](#11-search-products-api) merges
+   OFF name-search results (*"Mother Dairy"* now returns products); each item has a
+   `source`.
+8. **Report-missing works.** [`/report-missing`](#9-report-missing-product-api) auth is
+   now optional (anonymous reports allowed) with robust error handling.
+9. **Sodium vs salt consistency.** The frontend no longer flags bare "Salt" as
+   harmful when the sodium panel reads 0 mg.
+
+> Open Food Facts integration (#3/#6/#7) uses OFF's
+> [Search-a-licious](https://search.openfoodfacts.org) API — the legacy
+> `cgi/search.pl` endpoint is rate-limited and returns 503 HTML, which is why name
+> search previously found nothing. All new behaviour is env-tunable and on by
+> default (`SWAPIFY_EXTERNAL_SEARCH`).
+
+## 22 July Update — Fixes & New Features
+
+This release ships four fixes and four features. Details are in the linked
+sections; this is the summary.
+
+**Fixes**
+
+1. **Nutrition now shown per 100g (not per serving).** Product responses carry a
+   new `nutrition_per_100g` block — each nutrient scaled by `100 / serving_size_g`
+   so a 200 ml drink no longer reports its full-serving numbers under a "per 100g"
+   label. Per-serving fields are retained for backward compatibility.
+   See [Get Product Details](#1-get-product-details-api).
+2. **CSV ↔ scanner score consistency.** All backend endpoints already score
+   through one engine (`calculate_health_score_v2`, which implements
+   [`ScoringLogic_Swapify.md`](ScoringLogic_Swapify.md) — verified by
+   [`test_scoring_spec.py`](test_scoring_spec.py)); the frontend's own client-side
+   scorer was rewritten to mirror it exactly (per-serving penalties, per-100g
+   bonuses, category caps, transparency, 1–10 clamp), and the client catalogue CSV
+   is regenerated from the database via [`export_products.py`](export_products.py)
+   so both sides read identical data. A product now scores the same in a CSV list
+   and when scanned. See [Health Scoring Logic](#health-scoring-logic-v2).
+3. **AI chat: structured + product-aware.** Replies are now structured Markdown
+   (headline, **Key Highlights**, **Why it scored…**, **Healthier Alternative**),
+   and a product named in the question ("Frooti score", "is Maggi healthy?") is
+   looked up from the catalogue even with nothing scanned; if it isn't found the
+   bot tells the user to scan the barcode. See [AI Nutritionist Chatbot](#13-ai-nutritionist-chatbot-api).
+4. **All products load.** The client catalogue CSV drifted to a ~101-row subset;
+   it is regenerated from the full 252-product database so every product (e.g.
+   *Slurrp Farm Ragi, Almond & Banana Cereals*) is scannable.
+
+**Features**
+
+1. **New dietary preferences** — `no_preservatives`, `no_artificial_colors`,
+   `no_artificial_flavors`, `no_palm_oil`, and `clean_label` (all four at once).
+   These *filter* products (search / recommendations respect them) rather than
+   re-weighting the score. See [Dietary Preferences](#12-dietary-preferences-api)
+   and [`GET /preferences/available`](#12a-available-preferences-api).
+2. **"Better For You" badge** — product responses and list items carry
+   `is_better_for_you` (`true` when score ≥ 7). See [Better For You Badge](#27a-better-for-you-badge-feature-2).
+3. **Weekly digest email** — templated HTML/text digest (week's scans, favourites,
+   challenge progress) with pluggable delivery (SendGrid / SMTP / dry-run outbox),
+   a one-click signed unsubscribe link, and a cron runner
+   ([`cron_weekly_digest.py`](cron_weekly_digest.py)). See [Weekly Digest Email](#22a-weekly-digest-email-api-feature-3).
+4. **Product categories** — `GET /products/categories` and
+   `GET /products/by-category/{category}` (paginated, scored). See [Product Categories](#31-product-categories-api-feature-4).
+
 ## Live Deployment
 
 - **Live base URL:** `https://swapify-3.onrender.com`
@@ -69,25 +258,42 @@ otherwise resolve relative to the app.
 Once the server is running, the API will be available at `http://127.0.0.1:8000`.
 
 ### Automated test suite
-Two end-to-end smoke tests live in the `server` directory and exercise **every**
-endpoint (95 sections, including the ratings, recommendations, share-card, AI
-chat, barcode-validation, activity-logging, daily-digest, **weekly
-challenges & leaderboard**, **smart-cart shopping-list optimization**,
-**community reviews** and the **OCR label scanner** features), then verify the
-writes actually persisted to `swapify.db`. They auto-start the server if it isn't
-already running.
+Three end-to-end smoke tests live in the `server` directory and exercise **every**
+endpoint (including the ratings, recommendations, share-card, AI chat,
+barcode-validation, activity-logging, daily-digest, **weekly challenges &
+leaderboard**, **smart-cart shopping-list optimization**, **community reviews** and
+the **OCR label scanner** features), then verify the writes actually persisted to
+`swapify.db`. `test_api.ps1` / `test_api.sh` auto-start a local server if one isn't
+already running; `test_live_api.ps1` runs the same checks against the deployed API.
 
 ```bash
-# Windows PowerShell
+# Windows PowerShell — local
 ./test_api.ps1
 
-# Git Bash / WSL / Linux / macOS
+# Windows PowerShell — against the deployed backend
+./test_live_api.ps1
+
+# Git Bash / WSL / Linux / macOS — local
 bash test_api.sh
 ```
 
-Both print a per-request `HTTP <code>` and a final `Passed / Failed` tally. The
+All three print a per-request `HTTP <code>` and a final `Passed / Failed` tally. The
 AI `/chat` test reports its `source` (`openrouter`/`gemini` = real AI, `fallback`
 = rule-based) so you can confirm the AI key is live.
+
+**July 30 sections** (`101c`–`101e` in the local suites, `112c`–`112e` in the live
+one) cover this update's work:
+
+| Section | Asserts |
+|---|---|
+| `101`/`112` | `/products/categories` reports Open Food Facts' **real** per-category counts (a category in the thousands, not a 200 cap), and `count == db_count + external_count` on every tile |
+| `101c`/`112c` | `/products/by-category/biscuit?offset=1000` still returns products, i.e. paging goes into Open Food Facts rather than a pre-fetched buffer |
+| `101d`/`112d` | `GET /product/by-name/{name}` returns a scored product with a `resolution` trail |
+| `101e`/`112e` | `GET /product/{barcode}?refresh=true` re-resolves and still returns the product |
+
+The two network-dependent checks (the big category count and the deep page) **warn
+instead of failing** when Open Food Facts is unreachable, so a flaky network doesn't
+turn into a red test run.
 
 ### Interactive API Documentation
 FastAPI automatically generates interactive API documentation. You can access it here:
@@ -118,6 +324,180 @@ FastAPI automatically generates interactive API documentation. You can access it
 - **Headers:** `Authorization: Bearer <token>`
 - **Response:** Returns user details.
 
+<a id="post-forgot-password"></a>
+#### POST /forgot-password
+Emails a single-use password reset link.
+
+- **Body:** `{"email": "you@example.com"}`
+- **Response (always 200 for any valid-looking address):**
+  ```json
+  {
+    "message": "If an account exists for that email, a password reset link is on its way. Check your inbox (and spam folder).",
+    "expires_in_minutes": 30
+  }
+  ```
+- **400** — the address is malformed. **429** — more than
+  `FORGOT_PASSWORD_MAX_PER_HOUR` requests for that address in an hour.
+
+The message is byte-identical whether or not the account exists: confirming which
+addresses are registered is exactly how user lists get harvested. Only a SHA-256
+hash of the token (peppered with `SECRET_KEY`) is stored, so the token exists in the
+email and nowhere else. Issuing a link invalidates any earlier unused link for the
+same account.
+
+**Dev/CI only:** the response can also carry a `debug` object with `reset_url` and
+`token`, so the flow is testable without an inbox. `PASSWORD_RESET_EXPOSE_TOKEN`
+defaults to `auto`, which requires **both** that no mail provider is configured
+**and** that `APP_BASE_URL` is a loopback address — because "no mail provider" is
+also what a real deployment looks like when someone forgets `SMTP_PASSWORD`, which
+is exactly when you least want tokens in responses. `1` forces it on for a recorded
+demo, `0` off.
+
+```bash
+curl -X POST http://127.0.0.1:8000/forgot-password \
+     -H 'Content-Type: application/json' \
+     -d '{"email":"dhruv@example.com"}'
+```
+
+<a id="post-reset-password"></a>
+#### POST /reset-password
+Consumes the token from the email and sets the new password.
+
+- **Body:** `{"token": "<from the link>", "new_password": "N3wPassw0rd!"}`
+  (`password` is accepted as an alias for `new_password`.)
+- **200:** `{"message": "Password updated. You can now log in with your new password.", "email": "...", "username": "..."}`
+- **400:** token missing/invalid/**already used**/**expired**, or the password is
+  shorter than `PASSWORD_MIN_LENGTH` (default 6). The message says which.
+
+On success every other outstanding token for that account is invalidated too, so a
+second link still sitting in the mailbox cannot be replayed later.
+
+<a id="get-reset-password-validate"></a>
+#### GET /reset-password/validate?token=…
+Checks a link **before** showing the new-password form, so the page can say "this
+link expired" up front instead of after someone has typed a new password twice.
+
+```json
+{"valid": true, "reason": "valid", "email": "d*********1@gmail.com", "expires_at": "2026-07-31T12:05:11", "message": "Link is valid. Choose a new password."}
+```
+Invalid: `{"valid": false, "reason": "expired|used|invalid|missing", "message": "…"}`.
+The email is masked — the page needs to show *which* account, not disclose the
+address to whoever holds the link.
+
+<a id="get-reset-password"></a>
+#### GET /reset-password
+The HTML page the emailed link opens: a self-contained new-password form that POSTs
+back to `/reset-password`. Served by the API itself so password reset works with no
+frontend deployed (the web app is hosted separately). Point
+`PASSWORD_RESET_URL_BASE` at the web app to use that page instead.
+
+<a id="google-oauth-20-sign-in"></a>
+### Google OAuth 2.0 Sign-in
+
+Both entry points end in the **same JWT `POST /login` issues**, so every
+authenticated endpoint works with a Google-signed-in user unchanged.
+
+<a id="get-authgoogleconfig"></a>
+#### GET /auth/google/config
+What a frontend needs to render the button — and nothing secret.
+
+```json
+{"configured": true, "client_id": "3865…apps.googleusercontent.com",
+ "redirect_uri": "https://swapify-3.onrender.com/auth/google/callback",
+ "login_url": "https://swapify-3.onrender.com/auth/google/login",
+ "scopes": ["openid","email","profile"], "credentials_source": "env"}
+```
+`configured: false` means `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are unset and
+the `/auth/google/*` endpoints will return **503**. The web app hides the Google
+button unless this says `true`, so it never offers a button that can only fail.
+
+<a id="get-authgooglelogin"></a>
+#### GET /auth/google/login
+**302** to Google's consent screen. Aliased as `GET /auth/google`.
+
+- `?return_to=` — where the browser lands afterwards. Must be an origin already
+  trusted for CORS; anything else is **ignored, not honoured** (an open redirect
+  here would hand our JWTs to whoever asked).
+- `?flow=popup` — the callback hands the token back via `postMessage` to the exact
+  opener origin instead of redirecting.
+
+State is an HMAC-signed, self-contained token (10-minute TTL), so the callback is
+CSRF-protected without server-side session storage.
+
+<a id="get-authgooglecallback"></a>
+#### GET /auth/google/callback
+Where Google redirects back. Exchanges the code **server-side** (the client secret
+never reaches the browser), validates the ID token's issuer/audience/expiry/verified
+email, then finds, links or creates the account and issues a JWT.
+
+Account matching order: Google's `sub` first (stable even if the person changes
+their Gmail address), then the email address — which **links** an existing password
+account rather than creating a duplicate row that would strand its scan history. An
+account created by Google sign-in gets a random unusable password hash; the person
+can use "forgot password" to add a real one.
+
+Returns JSON when there is no frontend to hand off to (direct browser/API test):
+```json
+{"access_token":"eyJ…","token_type":"bearer","provider":"google",
+ "user_id":89,"username":"Dhruv","email":"…","is_new_user":true}
+```
+**Configuration:** the `redirect_uri` this server sends must appear **verbatim** in
+Google Cloud Console → Credentials → your OAuth client → *Authorised redirect URIs*,
+or Google answers `redirect_uri_mismatch` (the error message says so explicitly).
+
+<a id="post-authgoogletoken"></a>
+#### POST /auth/google/token
+For clients that already hold a Google ID token (Google Identity Services one-tap,
+mobile SDKs).
+
+- **Body:** `{"credential": "<Google ID token>"}` (`id_token` accepted as an alias)
+- **200:** `access_token`, `token_type`, `user_id`, `username`, `email`,
+  `avatar_url`, `is_new_user`, `linked_existing_account`
+- **400** no token, **401** the token isn't valid, **503** Google unreachable.
+
+Because this token arrives from an untrusted source its signature is verified — with
+`cryptography` installed, locally against Google's JWKS; otherwise by Google's own
+`tokeninfo` endpoint. (The `/callback` path skips signature verification only
+because that token arrives in our own TLS response from Google's token endpoint,
+which Google documents as sufficient; the claims are checked either way.)
+
+<a id="get-authemailstatus"></a>
+#### GET /auth/email/status
+Is outgoing mail actually working? A password-reset feature that quietly writes to
+`outbox/` looks identical to one that sends real mail; this is how you tell.
+
+```json
+{"provider": "outbox", "can_send_real_email": false,
+ "password_reset_ttl_minutes": 30,
+ "reset_link_base": "https://swapify-3.onrender.com/reset-password",
+ "token_exposed_in_response": false,
+ "note": "SMTP_USER is set (swapify.auth@gmail.com) but SMTP_PASSWORD is empty — for Gmail this must be a 16-character App Password from https://myaccount.google.com/apppasswords"}
+```
+
+`?probe=true` (requires `X-Admin-Token`) opens a **real SMTP session** and reports
+the server's own answer, including the Gmail App Password error with a fix hint:
+
+```bash
+curl "http://127.0.0.1:8000/auth/email/status?probe=true" -H "X-Admin-Token: $ADMIN_TOKEN"
+```
+
+A half-configured SMTP block (host + user, no password) can never authenticate, so
+it is treated as **not configured**: the app falls back to the outbox dry-run and
+says why, instead of accepting reset requests whose mail silently goes nowhere.
+
+<a id="get-autofillstatus"></a>
+#### GET /autofill/status
+Which auto-fill sources and web-search providers are reachable right now. Exists
+because an unresolvable product returns a plain 404 whether the product doesn't
+exist or every search provider is refusing us — the ambiguity behind "the Google
+safety net isn't fetching anything". Reports per provider whether it is configured
+and whether it is in cooldown, and warns when no *keyed* search provider is set:
+
+```json
+{"has_dependable_search": false,
+ "warning": "No keyed search provider is configured, so the Google safety net depends on keyless engines that rate-limit server IPs … set GOOGLE_API_KEY and GOOGLE_CSE_ID. Free tier: 100 queries/day."}
+```
+
 ### 1. Get Product Details API
 This endpoint returns all the detailed information (ingredients, nutritional facts) for a given product by its barcode. It also records the scan in the scan history if `device_id` is provided.
 
@@ -126,8 +506,25 @@ ingredient together with its **risk level** (`Low` / `Medium` / `High` / `Severe
 Risk levels are stored in the database (`ingredient_rules.risk_level`) — see
 [Ingredient Risk Levels](#ingredient-risk-levels) below.
 
-If the product is not in the local database, it is fetched and scored from
-**Open Food Facts** on the fly (the response then also includes `"source": "openfoodfacts"`).
+**Resolution is database-FIRST (auto-fill pipeline).** The barcode is resolved
+against **our database first**; only if a core nutrient is missing does it fall
+back — in strict priority order — to **Open Food Facts → USDA FoodData Central →
+IFCT 2017 → a [Google/web safety net](#google-web-safety-net)**. Whatever a fallback
+fills is normalised to per-100g and **written back to our database**, so the next
+scan of that product is served locally with no network call. The `source` field names
+the primary origin (`database`, `openfoodfacts`, `usda`, `ifct2017`, `google`), and a
+`resolution` object records the full audit trail (`sources_tried`, `enriched_by`,
+`filled_fields`, `matched_on`, `estimated`, `source_urls`). If every source fails the
+product is flagged for manual review and a `404` is returned. See
+[Auto-Fill Missing-Data Pipeline](#auto-fill-missing-data-pipeline) for details.
+
+Every product carries a **`confidence`** rating derived from how *complete* its
+data is — never a blanket "High". The five levels are **Very High** (all six
+nutrients + ingredients), **High** (most data, ≥5 nutrients), **Medium** (some
+data), **Low** (only ingredients), **Very Low** (no data). The `confidence_meta`
+object shows the evidence (`data_availability`, `nutrients_present`,
+`missing_fields`, `completeness`). Data filled by the estimating Google/AI net is
+capped at **Medium**. See [Data Confidence](#data-confidence).
 
 The response always includes an **`image_url`** — the product's contributed image
 or the shared placeholder (`/product-images/_placeholder.svg`) when it has none
@@ -151,10 +548,22 @@ suggestion. Valid barcodes omit this field.
 - **Headers (optional):** `Authorization: Bearer <token>` — personalize the score for the logged-in user.
 - **Query Parameters:**
   - `device_id` (optional): A unique device identifier to record the scan history.
+  - `refresh` (optional, boolean, July 30): re-run the auto-fill chain for this
+    barcode now, bypassing the 1-hour product cache, the negative-resolution cache
+    and the enrichment cooldown. Use it after fixing missing data (or to
+    demonstrate the pipeline); a normal scan never needs it. Without it, a product
+    that failed to fill keeps *looking* empty for the next 10 minutes even after
+    the cause is fixed. See
+    [Auto-Fill Missing-Data Pipeline](#auto-fill-missing-data-pipeline).
+
+**Related:** [`GET /product/by-name/{name}`](#get-product-by-name) resolves the same
+way from a **product name** instead of a barcode — for the packs no barcode database
+indexes, which are exactly the ones that otherwise show no data.
 
 **Example using `curl`:**
 ```bash
-curl http://127.0.0.1:8000/product/8901058005783   # Maggi noodles
+curl http://127.0.0.1:8000/product/8901058005783            # Maggi noodles
+curl "http://127.0.0.1:8000/product/8901058005783?refresh=true"   # force a re-resolve
 ```
 
 **Expected JSON Response (200 OK):**
@@ -164,30 +573,79 @@ curl http://127.0.0.1:8000/product/8901058005783   # Maggi noodles
   "product_name": "Maggi noodles",
   "brand": "Maggi",
   "category": "noodles",
-  "serving_size_g": 75.0,
-  "sugar_g_per_serving": 1.5,
-  "saturated_fat_g_per_serving": 6.8,
-  "sodium_mg_per_serving": 750.0,
-  "protein_g_per_serving": 6.2,
-  "fiber_g_per_serving": 2.5,
-  "calories_kcal_per_serving": 288.0,
+  "serving_size_g": 100.0,
+  "sugar_g_per_serving": 2.0,
+  "saturated_fat_g_per_serving": 9.07,
+  "sodium_mg_per_serving": 1000.0,
+  "protein_g_per_serving": 8.27,
+  "fiber_g_per_serving": 3.33,
+  "calories_kcal_per_serving": 384.0,
   "ingredients_text": "Maida (Refined wheat flour), Palm oil, Salt, MSG, TBHQ, Sodium benzoate, Tartrazine",
   "score": 1.0,
   "grade": "F",
   "rule_version": 1,
+  "source": "database",
+  "data_source": "database",
   "breakdown": { "...": "see Health Scoring Logic section" },
   "ingredient_flags": [
     {"name": "maida", "risk": "High"},
     {"name": "palm oil", "risk": "Medium"},
-    {"name": "salt", "risk": "Medium"},
-    {"name": "msg", "risk": "Medium"},
     {"name": "tbhq", "risk": "Severe"},
-    {"name": "sodium benzoate", "risk": "Medium"},
     {"name": "tartrazine", "risk": "High"}
   ],
+  "is_better_for_you": false,
+  "better_for_you_badge": {"is_better_for_you": false, "label": null, "threshold": 7.0, "score": 1.0},
+  "confidence": "Very High",
+  "confidence_meta": {
+    "level": "Very High",
+    "class": "confidence-very-high",
+    "completeness": 1.0,
+    "nutrients_present": 6,
+    "nutrients_total": 6,
+    "has_ingredients": true,
+    "data_availability": {
+      "calories": true, "sugar": true, "protein": true,
+      "sodium": true, "fiber": true, "saturated_fat": true, "ingredients": true
+    },
+    "missing_fields": []
+  },
+  "nutrition_per_100g": {
+    "basis": "per_100g",
+    "serving_size_g": 100.0,
+    "calories": 384.0,
+    "sugar": 2.0,
+    "saturated_fat": 9.1,
+    "sodium": 1000.0,
+    "protein": 8.3,
+    "fiber": 3.3
+  },
+  "resolution": {
+    "source": "database",
+    "sources_tried": ["database"],
+    "enriched_by": [],
+    "filled_fields": [],
+    "matched_on": "barcode",
+    "estimated": false
+  },
   "image_url": "/product-images/_placeholder.svg"
 }
 ```
+
+> **`serving_size_g` is always `100`.** The entire catalogue is stored per-100g so
+> scores are directly comparable — a 44 g product can no longer out-score an
+> identical 100 g one. The `nutrition_per_100g` block reports the same 100g basis
+> for display; when a row's `serving_size_g` is genuinely unknown the `basis` is
+> `"per_serving_unknown"` and values pass through unchanged.
+>
+> **`confidence` (Tasks 2 & 7):** rates data completeness on five levels; see
+> [Data Confidence](#data-confidence). `confidence_meta` carries the evidence.
+>
+> **`source` / `data_source` / `resolution`:** where the data came from and the
+> auto-fill audit trail; see [Auto-Fill Missing-Data Pipeline](#auto-fill-missing-data-pipeline).
+>
+> **`is_better_for_you` (Feature 2):** `true` when `score ≥ 7`. `better_for_you_badge`
+> carries the label and threshold. This is a lighter flag than the stricter
+> [Swapify Recommended badge](#27-swapify-recommended-badge-api).
 
 **Expected Error Response (404 Not Found):**
 ```json
@@ -195,6 +653,207 @@ curl http://127.0.0.1:8000/product/8901058005783   # Maggi noodles
   "error": "Product not found"
 }
 ```
+
+<a name="data-confidence"></a>
+### 1a. Data Confidence  (Tasks 2 & 7)
+
+Every scored product carries a **`confidence`** string that reflects **how complete
+its data is** — it is *not* a fixed "High". This replaces the old behaviour where a
+product with no nutrition still showed "High" confidence.
+
+| Data available | `confidence` |
+|---|---|
+| All six nutrients **and** ingredients | **Very High** |
+| Most data present (≥ 5 of 6 nutrients) | **High** |
+| Some data present (1–4 nutrients) | **Medium** |
+| Only ingredients present (no nutrients) | **Low** |
+| No data present | **Very Low** |
+
+The six nutrients counted are calories, sugar, protein, sodium, fibre and saturated
+fat. A genuine `0` counts as present (it is data); only `null`/blank is missing.
+`confidence_meta` exposes the evidence:
+
+```json
+"confidence_meta": {
+  "level": "Medium",
+  "class": "confidence-medium",
+  "completeness": 0.571,
+  "nutrients_present": 4,
+  "nutrients_total": 6,
+  "has_ingredients": false,
+  "data_availability": {"calories": true, "sugar": true, "protein": true,
+                         "sodium": true, "fiber": false, "saturated_fat": false,
+                         "ingredients": false},
+  "missing_fields": ["fiber", "saturated_fat", "ingredients"]
+}
+```
+
+Data filled by the estimating Google/AI safety net is **capped at Medium** (with
+`"capped_reason": "estimated_source"`) so a best-effort guess can never present as
+"Very High".
+
+<a name="auto-fill-missing-data-pipeline"></a>
+### 1b. Auto-Fill Missing-Data Pipeline  (database-first)
+
+Product resolution checks **our database first** and only reaches out when a core
+nutrient is actually missing, in strict priority order:
+
+| # | Source | Provides |
+|---|---|---|
+| 1 | **Swapify database** (CSV-seeded) | our curated data — **always checked first** |
+| 2 | **Open Food Facts** | barcode lookup **then a name search** (via [Search-a-licious](https://search.openfoodfacts.org)), nutrition, ingredients, image |
+| 3 | **USDA FoodData Central** | 600k foods, detailed nutrition (`USDA_API_KEY`, defaults to `DEMO_KEY`) |
+| 4 | **IFCT 2017** (Indian Foods) | generic Indian foods, per-100g — bundled subset at `data/ifct2017.json`, override with `IFCT_DATA_PATH` |
+| 5 | **Google / web safety net** | last resort — a real web search + nutrition-panel extraction, then an AI estimate |
+
+The chain stops as soon as the six core nutrients are present. Anything a fallback
+fills is **normalised to per-100g** and **written back to our database**, so the
+next scan of that product is served locally with no network call. If every source
+fails, the product is flagged for manual review (`missing_reports`) and the endpoint
+returns `404`.
+
+**Fixes (July 30) — why products with missing data showed nothing:**
+
+- **Source 4 (IFCT) was a dead no-op.** No dataset ever shipped, so
+  `os.path.exists` was `False` on every request: `ifct2017` appeared in
+  `sources_tried` but could not contribute a single value. A curated subset of
+  Indian generic-food composition values now ships at `data/ifct2017.json`, and a
+  missing file is logged as a warning instead of passing silently. Matching is
+  relevance-gated like the other name-based sources, so the generic "Amla" record
+  answers a query for amla and never a query for a *branded* amla drink (whose
+  numbers are different, and which should fall through to the safety net).
+- **Source 5 got no time to run.** It shares a 6s budget with OFF and USDA and
+  runs *last*, so by the time it started there was often under a second left —
+  nowhere near enough to search the web and read a page, so it always came back
+  empty. It now gets a budget of its own (`SWAPIFY_WEB_NET_BUDGET`, 12s). This
+  does not slow ordinary scans: a product Open Food Facts knows never reaches
+  source 5, and a product that does is resolved once and then served from our DB.
+- **Products with no barcode anywhere were unreachable.** The chain could only be
+  entered by barcode, so a product no barcode database indexes could not be looked
+  up at all — searching for it returned nothing and it stayed permanently empty.
+  [`GET /product/by-name/{name}`](#get-product-by-name) runs the same chain from a
+  name and stores the result under a stable key.
+- **`?refresh=true`** on `/product/{barcode}` and `/product/by-name/{name}` forces
+  a re-resolve, bypassing the product cache, the negative-resolution cache and the
+  enrichment cooldown. Without it a product that failed to fill kept *looking*
+  empty for the next ten minutes even after the cause was fixed.
+
+**Speed & data-quality guards (July 27):**
+
+- The whole fallback chain is bounded by a single wall-clock budget
+  (`SWAPIFY_AUTOFILL_BUDGET`, 6s) — each source only gets `min(its timeout, the
+  budget left)`, and the slow AI estimate is capped separately
+  (`SWAPIFY_AI_ESTIMATE_TIMEOUT`, 4s) — so a scan can never hang for 20s+ on a
+  slow/unresponsive source.
+- A barcode that resolves to **nothing anywhere** is cached as a miss for
+  `SWAPIFY_NEGATIVE_TTL` (600s) so repeat scans return an instant `404` instead of
+  re-running the chain; a product that resolves but stays *partially* incomplete
+  is not re-fetched for `SWAPIFY_ENRICH_COOLDOWN` (600s).
+- Name-based matches (USDA search, OFF name search) must be **relevant** — at least
+  half of the query's identifying words must appear in the candidate — so a loose
+  fuzzy match (e.g. USDA answering "Amul Fruit N Nut" with "McDonald's Fruit'n
+  Yogurt Parfait") can't inject an unrelated product's nutrition. A barcode/GTIN
+  match is exact and skips this check.
+- `product_name` is guaranteed non-placeholder: a product resolved from OFF/USDA
+  that has no name (or the literal "Unknown Product") falls back to its brand, so
+  the client always shows a real label.
+
+Each `/product` response reports the outcome:
+
+```json
+"source": "database",
+"data_source": "database",
+"resolution": {
+  "source": "openfoodfacts",
+  "sources_tried": ["database", "openfoodfacts", "usda"],
+  "enriched_by": ["usda"],
+  "filled_fields": ["fiber_g_per_serving"],
+  "matched_on": "barcode",
+  "estimated": false,
+  "source_urls": []
+}
+```
+
+`source_urls` lists the pages a web-derived value came from, so an estimate can be
+traced (and a wrong auto-fill diagnosed) rather than taken on faith.
+
+<a name="google-web-safety-net"></a>
+#### Source 5 — the Google / web safety net
+
+The net used to be "SerpApi, else ask an LLM". **SerpApi needs a paid key that was
+never configured**, so in practice every product that got this far fell through to
+a free-tier LLM estimate that is usually rate-limited and returns nothing — the net
+existed but never actually fetched anything. It now runs a provider chain whose
+last entries need no key at all:
+
+| Order | Provider | Key required |
+|---|---|---|
+| 1 | SerpApi | `SERPAPI_KEY` |
+| 2 | **Google Programmable Search JSON API** | `GOOGLE_API_KEY` + `GOOGLE_CSE_ID` — **recommended** |
+| 3 | DuckDuckGo (HTML, then Lite) | none |
+| 4 | Bing (RSS) | none |
+| 5 | Mojeek | none |
+
+> **Set `GOOGLE_API_KEY` + `GOOGLE_CSE_ID` for production.** It is the official
+> Google Search API, free for 100 queries/day — far more than this net needs, since
+> it only runs for a product no food database describes and the answer is then
+> stored permanently. The keyless engines do work, but they answer a burst of
+> scripted requests with a challenge page instead of results, so without a key the
+> net is best-effort rather than dependable.
+
+Extraction runs in two passes, cheapest first:
+
+1. **the result snippets**, which for a well-indexed product already carry the
+   panel ("Kapiva Amla Juice contains 200 calories per 1 Bottle (500g)");
+2. **the top relevant result pages**, fetched in parallel and mined for their
+   nutrition table — only when a score-driving nutrient is still missing.
+
+Guards on what it will believe:
+
+- **Relevance** — a result's title/snippet (and a page's opening text) must pass
+  the same `_name_is_relevant` check as the other sources, so a search for "Kapiva
+  Wild Amla Juice" can never be answered with Dabur's amla juice panel.
+- **Serving-size awareness** — the reference quantity is detected per nutrition
+  block and everything is rescaled to per-100g. Reading a panel as if it were
+  already per-100g turns a 500 g bottle's 200 kcal into a 200 kcal/100 g juice.
+  On a page carrying several bases at once (a "per 100g" heading in one section, a
+  "Serving size 1 Bottle 500 g" panel in another), each block is parsed under its
+  own basis and a block that states its reference quantity beats one that does not.
+- **Sanity limits** — 100 g of food cannot exceed 900 kcal, 100 g sugar/protein/
+  fibre/saturated fat or 40,000 mg sodium; a value past those means a price or a
+  percentage was mis-read, and it is dropped.
+- Everything the net returns is flagged `estimated: true`, which caps the
+  product's [confidence](#data-confidence) at **Medium**.
+
+**Config (all optional, safe defaults):** `SWAPIFY_AUTOFILL` (on), `SWAPIFY_GOOGLE_FALLBACK`
+(on), `SWAPIFY_SOURCE_TIMEOUT` (5s), `SWAPIFY_AUTOFILL_BUDGET` (6s),
+`SWAPIFY_AI_ESTIMATE_TIMEOUT` (4s), `SWAPIFY_OFF_TIMEOUT` (5s),
+`SWAPIFY_NEGATIVE_TTL` (600s), `SWAPIFY_ENRICH_COOLDOWN` (600s), `USDA_API_KEY`,
+`SERPAPI_KEY`, `GOOGLE_API_KEY`, `GOOGLE_CSE_ID`, `IFCT_DATA_PATH`,
+`SWAPIFY_WEB_SEARCH` (on), `SWAPIFY_WEB_NET_BUDGET` (12s), `SWAPIFY_WEB_PAGES` (4),
+`SWAPIFY_WEB_PAGE_TIMEOUT` (5s), `SWAPIFY_WEB_NET_TTL` (3600s),
+`SWAPIFY_WEB_PROVIDER_COOLDOWN` (300s). Complete database products (the whole
+curated catalogue) make **zero** network calls.
+
+<a name="get-product-by-name"></a>
+#### GET /product/by-name/{name}
+
+Look up (and auto-fill) a product by **name** instead of barcode — the same
+DB-first chain, for the products no barcode database indexes.
+
+```bash
+curl "http://127.0.0.1:8000/product/by-name/Kapiva%20Wild%20Amla%20Juice"
+curl "http://127.0.0.1:8000/product/by-name/Nutella?refresh=true"
+```
+
+- `refresh=true` — ignore the enrichment cooldown and resolve again.
+- Returns the same payload as `GET /product/{barcode}` (score, grade, breakdown,
+  per-100g nutrition, confidence) plus `resolution`, which names every source
+  tried and the pages any web-derived value came from.
+- A product resolved this way is stored under a stable key derived from its name
+  (`sw-<hash>`, outside the numeric space a real scan can produce), so it appears
+  in search and in its category from the next request on.
+- `404` with `{"error", "query", "sources_tried"}` when nothing describes the name.
 
 ### 2. Get Product Health Score API
 This endpoint returns only the health score and the corresponding grade for a given product by its barcode.
@@ -606,18 +1265,41 @@ curl -H "Authorization: Bearer <YOUR_TOKEN>" "http://127.0.0.1:8000/history"
 ]
 ```
 
+**Product names are never a placeholder — July 28 (Issue 2).** `scan_history` keeps
+its own `product_name`/`health_score` snapshot taken at scan time. When the scanned
+barcode has no row in `products` (the pack was resolved from Open Food Facts, or
+scanned from the bundled offline CSV), the endpoint used to ignore that snapshot and
+return the literal **`"Unknown Product"`** — which is how a scanned *Cadbury 5 Star*
+appeared as an unknown product even though its name was recorded. It now falls back
+in order: the `products` name → the scan-time snapshot → the brand → `"Scanned
+product <barcode>"`. The stored `health_score` is returned too (with a derived
+`grade`) instead of `null`.
+
+The same fallback policy (`display_product_name` in `app.py`) now covers
+`GET /favorites` and the `card.title` of `GET /share/{barcode}` — every endpoint
+that renders a denormalised snapshot rather than a freshly resolved product. No API
+response contains the string `"Unknown Product"` any more.
+
 ### 9. Report Missing Product API
-This endpoint allows users to report a product that was not found in the database. Requires authentication.
+This endpoint allows users to report a product that was not found in the database.
+
+**Authentication is optional (July 27).** A shopper who scans an unknown pack can
+report it whether or not they are signed in — requiring a valid token here was what
+surfaced in the app as *"Backend Unreachable — could not submit the report."* When a
+valid `Authorization` header is sent the report is credited to that user (an
+`activity` log entry) and `authenticated` is `true` in the response. Reports are
+**de-duplicated per barcode**, and a transient DB error returns a clean `503`
+(never a dropped connection or a `500`).
 
 - **URL:** `/report-missing`
 - **Method:** `POST`
-- **Headers:** `Authorization: Bearer <token>`
+- **Headers:** `Authorization: Bearer <token>` *(optional)*
 - **Request Body (JSON):**
   - `barcode` (required, string): The scanned barcode.
   - `product_name` (optional, string): The name of the product.
   - `comment` (optional, string): User's comment or additional info.
 
-**Example using `curl`:**
+**Example using `curl` (anonymous):**
 ```bash
 curl -X POST http://127.0.0.1:8000/report-missing \
 -H "Content-Type: application/json" \
@@ -627,9 +1309,15 @@ curl -X POST http://127.0.0.1:8000/report-missing \
 **Expected JSON Response (200 OK):**
 ```json
 {
-  "status": "reported"
+  "status": "reported",
+  "barcode": "123456789",
+  "already_reported": false,
+  "authenticated": false
 }
 ```
+
+**Errors:** `400` when `barcode` is empty; `503` if the report can't be saved
+(retryable).
 
 ### 10. Offline Products API
 This endpoint returns the entire product database in a lightweight JSON response for offline caching.
@@ -684,50 +1372,54 @@ searches return the shape below.
   - `category`: filter by category (`LIKE`), e.g. `?category=chips`.
   - `min_score` / `max_score`: keep only products within this health-score range.
   - `grade`: keep only products with this letter grade (`A`–`F`).
+  - `no_preservatives` / `no_artificial_colors` / `no_artificial_flavors` /
+    `no_palm_oil` / `clean_label` (booleans, Feature 1): clean-label filters. A
+    product is dropped only when the avoided additive is positively detected in its
+    ingredient list; `clean_label=true` applies all four. When the request is
+    authenticated, the user's **saved** clean-label preferences apply too (the
+    query flags add to them).
   - `sort`: `score_desc` (default, healthiest first), `score_asc`, or `name`.
-  - `limit`: 1–500 results per page (**default 50**).
+  - `limit`: 1–500 results per page (default 50).
   - `offset`: number of ranked results to skip, for pagination (default 0).
-  - `meta`: when `true`, return a pagination envelope instead of a bare array.
+  - `external` (boolean, July 27): include Open Food Facts' global catalogue in
+    text searches. Defaults to the `SWAPIFY_EXTERNAL_SEARCH` setting (on); pass
+    `external=false` to search **only** our curated catalogue.
 
-> **Changed:** `limit` used to default to 10 and was hard-capped at 50, so a
-> client that did not paginate could only ever display the first 10 of the ~250
-> curated products — which looked like "most products are missing" even though
-> the catalogue was complete. The default is now 50 and the cap is 500, so
-> `?limit=300` returns the whole catalogue in one call. Use `meta=true` to tell
-> "this is everything" apart from "this is page 1".
+Each result item also carries `is_better_for_you` (Feature 2 — `true` when
+`score ≥ 7`) and a **`source`** field — `"database"` for our curated catalogue or
+`"openfoodfacts"` for a global-catalogue hit.
+
+**Global catalogue (Open Food Facts) — July 27:** for a **text** search, results
+from Open Food Facts are merged in after our own so a product we don't curate
+(e.g. *"Mother Dairy"*) still appears in search instead of only when its barcode is
+scanned. Our own DB rows come first and are never delayed by OFF; external hits are
+appended best-effort (short timeout, cached ~5 min), de-duplicated by barcode, and
+pass the very same score/grade/clean-label filters. Clicking an OFF result through
+to [`GET /product/{barcode}`](#1-get-product-details-api) resolves it fully. This
+uses OFF's [Search-a-licious](https://search.openfoodfacts.org) API — the legacy
+`cgi/search.pl` endpoint is heavily rate-limited and often returns a 503 HTML page,
+which is why name search previously "found nothing".
 
 **Pagination:** results are scored, filtered and ranked, then the page is sliced
-as `results[offset : offset + limit]`. For example `?limit=50&offset=0` is page 1
-and `?limit=50&offset=50` is page 2.
-
-With `?meta=true` the response is an object instead of an array:
-
-```json
-{ "total": 252, "count": 50, "limit": 50, "offset": 0, "has_more": true,
-  "results": [ ... ] }
-```
-
-Each result includes an `image_url` — the
+as `results[offset : offset + limit]`. For example `?limit=10&offset=0` is page 1
+and `?limit=10&offset=10` is page 2. Each result includes an `image_url` — the
 product's own uploaded image, or the shared placeholder
 (`/product-images/_placeholder.svg`) when it has none (see
 [Product Images](#28-product-image-upload-api)).
 
 **Example using `curl`:**
 ```bash
-# Text search (healthiest first)
-curl "http://127.0.0.1:8000/search?q=lays"
+# Text search (healthiest first) — includes Open Food Facts products
+curl "http://127.0.0.1:8000/search?q=mother+dairy"
+
+# Our curated catalogue only (no external results)
+curl "http://127.0.0.1:8000/search?q=lays&external=false"
 
 # Filter: grade-A products in the "chips" category, cheapest-scoring first
 curl "http://127.0.0.1:8000/search?category=chips&min_score=3&sort=score_desc&limit=5"
 
-# Pagination — second page of 50
-curl "http://127.0.0.1:8000/search?q=&sort=name&limit=50&offset=50"
-
-# The entire curated catalogue in one call
-curl "http://127.0.0.1:8000/search?limit=300"
-
-# With pagination metadata
-curl "http://127.0.0.1:8000/search?meta=true&limit=50"
+# Pagination — second page of 10
+curl "http://127.0.0.1:8000/search?q=&sort=name&limit=10&offset=10"
 ```
 
 **Expected JSON Response (200 OK):**
@@ -740,21 +1432,41 @@ curl "http://127.0.0.1:8000/search?meta=true&limit=50"
     "category": "chips",
     "score": 6,
     "grade": "C",
-    "image_url": "/product-images/_placeholder.svg"
+    "is_better_for_you": false,
+    "image_url": "/product-images/_placeholder.svg",
+    "source": "database"
   }
 ]
 ```
 
 #### Autocomplete (typeahead) — `/search/autocomplete`
-Lightweight suggestions for a search box, returned as the user types. Matches
-`product_name` and `brand` with SQL `LIKE`; **prefix** matches are ranked ahead of
+Lightweight suggestions for a search box, returned as the user types. Matching is
+word-level and punctuation-tolerant; **prefix** matches are ranked ahead of
 mid-word matches. A blank query returns an empty list.
+
+Suggestions come from the curated catalogue first and are then **topped up from
+Open Food Facts** when our own rows can't fill the dropdown, so the search box
+can reach products we don't curate ("nutella", "pringles") instead of only the
+~250 seeded ones. Curated rows always keep the top slots and are never delayed by
+OFF — if OFF is slow or unreachable, the catalogue half is returned on its own.
+
+Each suggestion carries `source` (`"database"` or `"openfoodfacts"`); OFF rows
+arrive already scored, so they also carry `score`, `grade` and
+`is_better_for_you`. Catalogue rows omit those three (the typeahead index holds
+no nutrition — clients score them locally or call `/product/{barcode}`).
 
 - **URL:** `/search/autocomplete`
 - **Method:** `GET`
 - **Query Parameters:**
   - `q` (required): the partial text typed so far.
   - `limit`: 1–10 suggestions (default 8).
+  - `external`: include the Open Food Facts half. Defaults to the
+    `SWAPIFY_EXTERNAL_SEARCH` setting; pass `external=false` for curated only.
+
+The OFF top-up is skipped for queries shorter than
+`SWAPIFY_AUTOCOMPLETE_EXTERNAL_MIN_CHARS` (default 3) so short prefixes stay
+instant, and is bounded by `SWAPIFY_AUTOCOMPLETE_EXTERNAL_TIMEOUT` (default
+2.5 s).
 
 **Example using `curl`:**
 ```bash
@@ -765,10 +1477,14 @@ curl "http://127.0.0.1:8000/search/autocomplete?q=mag&limit=5"
 ```json
 {
   "query": "mag",
-  "count": 2,
+  "count": 3,
   "suggestions": [
-    {"product_name": "Maggi noodles", "brand": "Maggi", "barcode": "8901058005783"},
-    {"product_name": "Maggi masala",  "brand": "Maggi", "barcode": "8901058005784"}
+    {"product_name": "Maggi noodles", "brand": "Maggi", "barcode": "8901058005783",
+     "source": "database"},
+    {"product_name": "Maggi masala",  "brand": "Maggi", "barcode": "8901058005784",
+     "source": "database"},
+    {"product_name": "Maggi Hot Heads", "brand": "Nestlé", "barcode": "8901058872231",
+     "source": "openfoodfacts", "score": 3.5, "grade": "D", "is_better_for_you": false}
   ]
 }
 ```
@@ -780,7 +1496,10 @@ preference-aware [Better Alternatives](#5-similar-products-api-better-alternativ
 ranking. Requires authentication. Preferences are stored in the
 `user_preferences` table (one row per user, JSON of boolean flags).
 
-**Recognised preference flags** (all optional booleans, default `false`):
+There are two kinds of preference. **Scoring** preferences re-weight the health
+score; **clean-label** preferences (Feature 1) *filter* products out of results.
+
+**Scoring preferences** (all optional booleans, default `false`):
 
 | Flag | Effect |
 |------|--------|
@@ -790,6 +1509,23 @@ ranking. Requires authentication. Preferences are stored in the
 | `high_protein` | Protein bonus weighted **×2.5**; higher-protein alternatives ranked first. |
 | `high_fiber` | Fiber bonus weighted **×2.5**; higher-fiber alternatives ranked first. |
 | `vegan` | Cancels dairy "Protein Quality" bonuses; non-vegan alternatives filtered out of `/similar`. |
+
+**Clean-label preferences (Feature 1)** — these *filter* products in `/search`,
+`/recommendations` and the home feed. A product is dropped only when the avoided
+additive is **positively detected** in its ingredient list; a product with no
+ingredient list is kept (absence of data is not proof of a violation).
+
+| Flag | Effect |
+|------|--------|
+| `no_preservatives` | Hide products with chemical preservatives (BHA, TBHQ, benzoates, INS 2xx …). |
+| `no_artificial_colors` | Hide products with synthetic colours (tartrazine, sunset yellow, INS 1xx …). |
+| `no_artificial_flavors` | Hide products listing artificial / synthetic flavourings. |
+| `no_palm_oil` | Hide products containing palm oil / palmolein / palm fat. |
+| `clean_label` | All four clean-label filters at once. |
+
+Clean-label preferences can also be passed as query flags directly to
+[`/search`](#11-search-products-api) (e.g. `?clean_label=true`), which is the
+easiest way to demo them without saving preferences first.
 
 #### Get Preferences
 - **URL:** `/preferences`
@@ -807,7 +1543,12 @@ stable shape (defaulting to `false`).
     "low_fat": false,
     "high_protein": true,
     "high_fiber": false,
-    "vegan": false
+    "vegan": false,
+    "no_preservatives": false,
+    "no_artificial_colors": false,
+    "no_artificial_flavors": false,
+    "no_palm_oil": false,
+    "clean_label": false
   }
 }
 ```
@@ -828,21 +1569,8 @@ curl -X POST http://127.0.0.1:8000/preferences \
 -d '{"preferences": {"low_sugar": true, "high_protein": true}}'
 ```
 
-**Expected JSON Response (200 OK):**
-```json
-{
-  "status": "preferences saved",
-  "user_id": 2,
-  "preferences": {
-    "low_sugar": true,
-    "low_sodium": false,
-    "low_fat": false,
-    "high_protein": true,
-    "high_fiber": false,
-    "vegan": false
-  }
-}
-```
+**Expected JSON Response (200 OK):** all recognised flags are echoed back. Saving
+`{"clean_label": true}` alone, for example, returns it among the full set.
 
 #### Update Preferences (legacy alias)
 `POST /update-preferences` is kept for backwards compatibility and now **persists**
@@ -850,6 +1578,32 @@ preferences (previously a no-op). It accepts either a flat body
 (`{"low_sugar": true}`) or a wrapped body (`{"preferences": {...}}`) and returns
 `{"status": "preferences updated", "preferences": {...}}`. New clients should use
 `POST /preferences`.
+
+### 12a. Available Preferences API
+Lists every preference the app supports, with labels, types and descriptions, so a
+client can render the toggles without hard-coding them (Feature 1). **No auth.**
+
+- **URL:** `/preferences/available`
+- **Method:** `GET`
+
+**Example using `curl`:**
+```bash
+curl http://127.0.0.1:8000/preferences/available
+```
+
+**Expected JSON Response (200 OK):**
+```json
+{
+  "count": 11,
+  "preferences": [
+    {"key": "low_sugar", "label": "Low Sugar", "type": "scoring", "description": "…"},
+    {"key": "no_palm_oil", "label": "No Palm Oil", "type": "clean_label", "description": "…"},
+    {"key": "clean_label", "label": "Clean Label", "type": "clean_label", "description": "…"}
+  ],
+  "scoring_preferences": ["low_sugar", "low_sodium", "low_fat", "high_protein", "high_fiber", "vegan"],
+  "clean_label_preferences": ["no_preservatives", "no_artificial_colors", "no_artificial_flavors", "no_palm_oil", "clean_label"]
+}
+```
 
 ### 13. AI Nutritionist Chatbot API
 A **real LLM-powered** nutritionist (not rule-based) that answers free-text
@@ -876,122 +1630,49 @@ When a `barcode` is supplied, the product's nutrition, ingredients, health score
 flagged ingredients **and score breakdown** are passed to the model as grounding
 context.
 
+#### Structured formatting (Fix 3A)
+Replies are **structured Markdown**, not one plain block: a bold headline, then
+sections such as **Key Highlights**, **Why it scored this way** and **Healthier
+Alternative**, using bullet points and short sections. The frontend renders the
+Markdown (headers, lists, bold/italic) into styled HTML. This holds whether the
+answer comes from the LLM or, when no AI key is configured, from the deterministic
+rule-based fallback — the fallback now emits the same structured shape.
+
+#### Product lookup by name (Fix 3B)
+A product **named in the question** is resolved from the catalogue even with no
+barcode scanned:
+- *"Frooti score"*, *"is Maggi healthy?"* → the product is looked up by name/brand
+  and its score, ingredients and per-100g nutrition ground the answer. A named
+  product takes precedence over whatever was last scanned. The response then has
+  `product_in_database: true` and `resolved_by: "name"`.
+- If the question is clearly about a specific product but it **isn't** in the
+  database, the bot doesn't answer generically — it returns a short guidance reply
+  ("You can scan the barcode of this product using the scanner to get all the
+  details and score"), with `product_in_database: false` and `source:
+  "product-lookup"`.
+
+> **Keyword weighting (July 27).** Every keyword found in the question is ranked by
+> how *identifying* it is — a full product name or brand outranks a longer but
+> generic descriptor word — so *"Kellogg's Multigrain Chocos"* resolves to
+> **"Chocos cereal"** instead of an unrelated *"…multigrain…chips"* (the old logic
+> let the single longest word win). Generic grain/label adjectives
+> (`multigrain`, `wholegrain`, …) are excluded from the lookup index.
+>
+> When a product-info question resolves to a product, the deterministic fast-path
+> answers directly from our scored data (`source: "fast-path-deterministic"`) and
+> now returns `product_name`, `score`, `grade` and `ingredient_flags` alongside the
+> Markdown `response`, so the client can render the score card without a second call.
+
 #### Greeting fast-path (performance)
 A bare greeting or smalltalk message (`"hi"`, `"hello"`, `"thanks"`, `"how are
 you"`, …) with no barcode is answered **instantly from a canned welcome — the LLM
 is never called**. This is what keeps a one-word "hi" at a few **milliseconds**
-instead of the multi-second round-trip a free-tier model + its failover chain
-would otherwise cost. Such a response has `source: "fast-path"`. The match is
-conservative: anything beyond a plain greeting (e.g. *"hi, is Maggi healthy?"*)
-still goes to the AI.
-
-#### App / commerce fast-path (scope)
-Questions about **Swapify itself** — *"can we buy products from this website?"*,
-*"is there delivery?"*, *"what is Swapify?"*, *"is it free?"* — are answered
-instantly with a correct canned reply (`source: "fast-path"`), because they have
-one right answer that does not depend on any product.
-
-This fixes a real misbehaviour: the client attaches the last-scanned barcode to
-**every** message, and the system prompt instructed the model to ground every
-claim in that product — so *"can we buy products from this website?"* was
-answered with an explanation of the attached cola's health score. Swapify is a
-scanner and comparison tool, **not a shop**: there is no cart, checkout, delivery
-or pricing.
-
-Matching uses word boundaries for single keywords and substrings for phrases, so
-a genuine nutrition question is not diverted — *"what's the relationship between
-sugar and diabetes?"* (contains "ship"), *"in order to lose weight…"* (contains
-"order"), *"how many cartons of juice?"* (contains "cart") and *"this delivers 5g
-of protein"* (contains "deliver") all still reach the LLM.
-
-#### Scope guardrail (out-of-scope questions)
-The system prompt now enforces a scope boundary:
-- **Product context is background, not the subject.** The model is told to ignore
-  the attached product unless the question is genuinely about it, and explicitly
-  not to answer an unrelated question by discussing that product's score.
-- **In scope:** food, drink, ingredients, nutrition, food labelling, and how
-  Swapify scores products.
-- **Out of scope** (general trivia, maths, coding, news, sport, politics): the
-  model declines in one friendly sentence — *even when it knows the answer* — and
-  offers what it can do instead, in ~40 words, without padding the reply with an
-  unrequested nutrition fact.
-
-#### Latency budget
-`/chat` is bounded by a **single wall-clock budget** (`CHAT_BUDGET`, default
-**12s**) shared across the entire provider failover chain, not just per-call
-timeouts. Each provider call receives `min(its timeout, budget remaining)` as its
-HTTP timeout, and a retry or a further provider is only attempted when enough
-budget remains to be worth it.
-
-Without this ceiling the chain could stack to roughly **48s** (2 OpenRouter
-models x 2 attempts x 12s, plus Gemini x 2) — which is what produced the observed
-15–20s+ replies. Beyond the budget, `/chat` degrades to the deterministic
-food-science answer (`source: "fallback"`) rather than making the user wait.
-
-Tunable via environment variables:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CHAT_BUDGET` | `12` | Whole-endpoint wall-clock ceiling, in seconds |
-| `OPENROUTER_TIMEOUT` | `8` | Per-call OpenRouter HTTP timeout (was 12) |
-| `GEMINI_TIMEOUT` | `8` | Per-call Gemini HTTP timeout (was 12) |
-| `LLM_MAX_TOKENS` | `400` | Reply cap (was 700; the prompt asks for <=150 words, and unused tokens are pure latency) |
-
-The scored-catalogue lookup behind **top picks** is also cached for 300s, so a
-*"best chocolates"* question no longer re-scores ~250 products on every request
-before the LLM call even begins.
-
-#### Retired model slugs — check this first when chat is slow
-Permanent provider errors (**400 / 401 / 403 / 404**) now skip to the next model
-**immediately, with no retry and no backoff**. Only transient failures (5xx,
-timeouts, connection errors) are retried.
-
-This was a live latency bug, not a hypothetical. Free model slugs get retired
-without notice, and the configured primary `openai/gpt-oss-120b:free` had started
-returning **404** ("unavailable for free"). Because the old code treated every
-non-429 error as transient, **every single `/chat` request** burned two full
-round trips plus a 0.4s backoff on a model that could never answer, before
-failing over to one that could.
-
-Probe results (2026-07-19) for the models that were configured:
-
-| Model | Status |
-|---|---|
-| `openai/gpt-oss-20b:free` | **200 — working**, now the primary |
-| `google/gemma-4-31b-it:free` | 429 rate-limited — kept as fallback |
-| `openai/gpt-oss-120b:free` | **404 retired** — was the default |
-| `meta-llama/llama-3.3-70b-instruct:free` | **404 retired** |
-| `qwen/qwen3-next-80b-a3b-instruct:free` | **404 retired** |
-
-The model chain is now pinned in `render.yaml` rather than left to dashboard
-values, so a retired slug is visible in git. **If `/chat` latency regresses,
-re-probe the configured slugs before tuning anything else** — a dead primary is
-the cheapest cause to rule out:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" -X POST https://openrouter.ai/api/v1/chat/completions \
-  -H "Authorization: Bearer $OPENROUTER_API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"openai/gpt-oss-20b:free","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
-```
-
-#### Remaining latency is provider-side, not code
-With the structural waste removed, what is left is **free-tier queue time, which
-no code change fixes**. Six identical requests to the same model with the same
-token cap, measured 2026-07-19:
-
-```
-1825 ms · 3692 ms · 6094 ms · 6312 ms · 6699 ms · 15225 ms
-```
-
-An 8x spread on an identical request. Typical `/chat` round-trips now land
-around **5–14s**, against a measured floor of ~1.5–2s (network + time-to-first-
-token) — so the tail is the provider queueing, not Swapify.
-
-Two things would actually move it, both outside this endpoint's current design:
-1. **Stream the response** (SSE). The user would see the first words in ~1.5–2s
-   instead of waiting for the whole reply. This is by far the biggest
-   *perceived*-latency win, and needs a matching frontend change.
-2. **A paid model tier**, which removes the free-tier queue entirely.
+instead of the multi-second (previously ~25s) round-trip a free-tier model + its
+failover chain would otherwise cost. Such a response has `source: "fast-path"`.
+The match is conservative: anything beyond a plain greeting (e.g. *"hi, is Maggi
+healthy?"*) still goes to the AI. Provider HTTP timeouts are also lowered and
+configurable (`OPENROUTER_TIMEOUT` / `GEMINI_TIMEOUT`, default 12s) so a slow
+model fails over sooner.
 
 #### Structured top picks (7+ rule)
 When the question asks for the best/top/healthiest products (*"what are the top
@@ -1868,6 +2549,66 @@ curl "http://127.0.0.1:8000/digest/2?date=2026-07-04"
 { "detail": "date must be in YYYY-MM-DD format" }
 ```
 
+### 22a. Weekly Digest Email API (Feature 3)
+A once-a-week summary **email**: the week's scans (count, average score, best /
+worst pick), the user's favourites, their challenge progress and a couple of "try
+next" recommendations. Templating, delivery and unsubscribe live in the standalone
+[`weekly_digest.py`](weekly_digest.py) module; the cron runner is
+[`cron_weekly_digest.py`](cron_weekly_digest.py).
+
+**Delivery is pluggable and degrades gracefully:**
+- `SENDGRID_API_KEY` set → send via the SendGrid v3 HTTP API.
+- `SMTP_HOST` (+ optional `SMTP_USER` / `SMTP_PASSWORD`) → send via SMTP.
+- neither set → **dry-run**: the rendered `.eml` is written to `EMAIL_OUTBOX`
+  (default `./outbox/`) and logged, so the feature works with no credentials.
+
+**Subscription** state lives in the `email_preferences` table (default: subscribed).
+Every email carries a one-click unsubscribe link with a **signed** token
+(HMAC-SHA256 over the user id with `SECRET_KEY`), so it works from an email client
+with no login and cannot be forged for another user.
+
+#### Preview the digest (data + rendered email)
+- **URL:** `/weekly-digest/{user_id}` · **Method:** `GET`
+
+```bash
+curl http://127.0.0.1:8000/weekly-digest/2
+```
+Returns `{ "digest": {…scans, favourites, challenges, recommendations…}, "email":
+{ "subject", "html", "text", "provider" }, "subscribed", "unsubscribe_url" }`.
+Nothing is sent.
+
+#### Send this user's digest now
+- **URL:** `/weekly-digest/{user_id}/send` · **Method:** `POST`
+
+Honours the unsubscribe flag (an opted-out user is not emailed). Returns
+`{ "sent": true, "provider": "outbox", "to": "…", "detail": "…" }`.
+
+#### Send to all subscribers (the cron target)
+- **URL:** `/admin/send-weekly-digests` · **Method:** `POST`
+- **Headers:** `X-Admin-Token: <ADMIN_TOKEN>` (403 without it)
+- **Query:** `limit` (optional, cap the batch — handy for testing).
+
+```bash
+curl -X POST "http://127.0.0.1:8000/admin/send-weekly-digests" \
+  -H "X-Admin-Token: $ADMIN_TOKEN"
+# -> {"sent": 12, "skipped": 3, "failed": 0, "provider": "outbox", "total_users": 15, ...}
+```
+Schedule it weekly (crontab or Windows Task Scheduler — see
+[`cron_weekly_digest.py`](cron_weekly_digest.py)):
+```cron
+0 8 * * 1  cd /path/to/swapify && python cron_weekly_digest.py >> digest.log 2>&1
+```
+
+#### Email subscription preferences (auth)
+- `GET /email-preferences` → `{ "user_id", "weekly_digest": true|false }`
+- `POST /email-preferences` with `{"weekly_digest": false}` → toggle off/on.
+
+#### Unsubscribe (one-click, no login)
+- **URL:** `/unsubscribe?token=<signed-token>` · **Method:** `GET`
+
+Returns a small HTML confirmation page and flips the user's subscription off. An
+invalid/forged token is rejected (`400`) without changing anything.
+
 ### 23. Weekly Challenges & Leaderboard API
 
 A **gamification** layer: users join **weekly challenges** and see where they
@@ -2438,6 +3179,24 @@ curl "http://127.0.0.1:8000/product/8908013479122/badge"
 When a product **does** qualify, `is_recommended` is `true`, `badge` is
 `"Swapify Recommended"` and `failing_criteria` is empty.
 
+### 27a. "Better For You" Badge (Feature 2)
+A lighter, purely score-driven badge — distinct from the stricter *Swapify
+Recommended* badge above (which also requires no high-risk ingredients and no
+artificial colours). **Any product scoring 7 or higher** earns it.
+
+There is no separate endpoint: the flag is attached to product and list responses
+so cards and detail pages can render it directly:
+- **Product detail** (`GET /product/{barcode}`, `GET /score/{barcode}`):
+  `is_better_for_you` (bool) and `better_for_you_badge`
+  (`{ "is_better_for_you", "label", "threshold": 7.0, "score" }`).
+- **Lists** (`/search`, `/products/by-category/{category}`, `/recommendations`,
+  `/home-feed` recently-scanned): each item carries `is_better_for_you`.
+
+```json
+{ "is_better_for_you": true,
+  "better_for_you_badge": {"is_better_for_you": true, "label": "Better For You", "threshold": 7.0, "score": 7.5} }
+```
+
 ---
 
 ### 28. Product Image Upload API
@@ -2813,10 +3572,168 @@ curl -H "X-Admin-Token: $ADMIN_TOKEN" "$BASE/experiment/analytics"
 > Export anything you need to keep (`GET /experiment/logs?limit=500`) before
 > redeploying. See [`DEPLOYMENT.md`](DEPLOYMENT.md) §11.
 
+### 31. Product Categories API (Feature 4)
+Backend support for the frontend categories page. Every product carries a
+consistent `category` (derived by the shared
+[`category_taxonomy.guess_category`](src/category_taxonomy.py) at seed time). **No
+auth.**
+
+#### List categories
+- **URL:** `/products/categories` · **Method:** `GET`
+- **Query Parameters:**
+  - `external` (boolean, July 28): include the Open Food Facts half of the counts.
+    Defaults to the `SWAPIFY_EXTERNAL_SEARCH` setting (on); pass `external=false`
+    for our curated counts only.
+
+```bash
+curl http://127.0.0.1:8000/products/categories
+```
+```json
+{
+  "count": 24,
+  "total_products": 181105,
+  "db_products": 255,
+  "external_products": 180850,
+  "external_source": "openfoodfacts",
+  "counts_pending": 0,
+  "categories": [
+    {"category": "chocolate", "label": "Chocolate", "count": 10049, "db_count": 49,
+     "external_count": 10000, "external_count_known": true, "external_count_capped": true},
+    {"category": "dairy_drink", "label": "Dairy Drink", "count": 7754, "db_count": 8,
+     "external_count": 7746, "external_count_known": true},
+    {"category": "milkshake", "label": "Milkshake", "count": 191, "db_count": 5,
+     "external_count": 186, "external_count_known": true}
+  ]
+}
+```
+Ordered by product count (largest first). `label` is a display-friendly form of
+the category id (`soft_drink` → `Soft Drink`).
+
+**Counts are Open Food Facts' real numbers — July 30 (Task 3).** `count` =
+`db_count` (our curated rows) + `external_count`, where `external_count` is now
+queried from Open Food Facts' search index for that category and cached for
+`SWAPIFY_CATEGORY_COUNT_TTL` (6 h). It used to be
+`SWAPIFY_CATEGORY_EXTERNAL_LIMIT` — **our own fetch cap** — which is exactly why
+the categories section reported a few hundred products for a database of millions.
+The total went from ~385 to ~181,000 browsable products on the same catalogue.
+
+Two things to know about the numbers:
+
+- `external_count_capped: true` means the category holds **more** than Open Food
+  Facts' search index will report (`SWAPIFY_OFF_RESULT_WINDOW`, 10,000), so read
+  that count as "10,000 or more".
+- `external_count_known: false` (and a non-zero `counts_pending`) means OFF could
+  not be reached in time for that tile. `external_count` is then `0` — so
+  `count == db_count + external_count` always holds — and the real number appears
+  on a later request: the count requests keep running and warm the cache. The
+  endpoint fans them out in parallel under one deadline
+  (`SWAPIFY_CATEGORY_COUNT_DEADLINE`, 6 s) rather than blocking the grid.
+
+Categories we can browse on OFF but curate nothing for still get a tile.
+`external=false` restores DB-only counts.
+
+#### Products in a category (paginated, scored)
+- **URL:** `/products/by-category/{category}` · **Method:** `GET`
+- **Query Parameters:**
+  - `sort`: `score_desc` (default, healthiest first), `score_asc`, or `name`.
+  - `limit`: 1–500 per page (default 50). · `offset`: skip N for pagination over
+    the **whole** category — our rows first, then Open Food Facts'.
+  - `external` (boolean, July 27): include Open Food Facts' global catalogue for
+    this category. Defaults to the `SWAPIFY_EXTERNAL_SEARCH` setting (on); pass
+    `external=false` for our curated list only.
+
+**Global catalogue (Open Food Facts) — July 27:** so a category page isn't capped at
+our ~250 curated rows, Open Food Facts products for the category are appended (via
+[Search-a-licious](https://search.openfoodfacts.org), mapped through
+`_OFF_CATEGORY_TAGS`), scored with the same engine and de-duplicated by barcode
+against our own rows. Each product carries a `source` (`"database"` or
+`"openfoodfacts"`), and the response reports `external_count` (OFF rows in *this
+page*) alongside `external_total` (OFF rows in the category).
+
+**No cap on depth — July 30 (Task 3).** Two fixes:
+
+1. **The category filter was silently ignored.** `categories_tags` was being sent
+   to Search-a-licious as its own request parameter, which the API accepts and then
+   drops: a request for `en:biscuits` came back with grated carrots and tinned
+   pears, and the only reason pages looked roughly right is that the `q` alongside
+   it was a plain text search for the category label. The filter now goes inside
+   `q` as Lucene syntax (`categories_tags:"en:biscuits"`) — verified 20/20 hits
+   correctly tagged, vs 18/20 for the text search — which is also what makes an
+   exact count possible.
+2. **Browsing addresses OFF directly.** `limit`/`offset` are translated into an
+   Open Food Facts page and fetched on demand, instead of merging a pre-fetched
+   buffer of 200 and paginating *that*. `offset=5000` really does return OFF's
+   5,000th biscuit. `total` is `db_total` + OFF's real count for the category, and
+   `external_total_capped: true` marks a category deeper than
+   `SWAPIFY_OFF_RESULT_WINDOW` (10,000 — OFF's search index will not page past it).
+
+Underlying OFF pages are `SWAPIFY_OFF_PAGE_SIZE` (100) products and cached for
+`SWAPIFY_CATEGORY_EXTERNAL_TTL` (30 min), so any `limit`/`offset` combination
+reuses the same cache entries and only the first visitor to a page pays the ~1–2 s
+fetch. `other` is the taxonomy's "no known peers" bucket, not a real category, so it
+stays DB-only (and correctly returns rows whose `category` is empty).
+
+**Sorting trade-off.** `sort` ranks our curated rows as a whole — they come first —
+while the Open Food Facts rows that follow keep OFF's own ordering and are sorted
+within the returned page. Ranking millions of external products globally would mean
+downloading them all first; this is the trade for being able to browse the whole
+catalogue.
+
+```bash
+curl "http://127.0.0.1:8000/products/by-category/protein_bar?limit=2"
+```
+```json
+{
+  "category": "protein_bar",
+  "label": "Protein Bar",
+  "total": 4062,
+  "db_total": 10,
+  "external_total": 4052,
+  "external_count": 0,
+  "count": 2,
+  "limit": 2,
+  "offset": 0,
+  "has_more": true,
+  "products": [
+    {"barcode": "8908013479122", "product_name": "The whole truth food protein bar",
+     "brand": "The whole truth", "category": "protein_bar", "score": 6.1, "grade": "C",
+     "recommended": false, "is_better_for_you": false,
+     "nutrition_per_100g": {"basis": "per_100g", "serving_size_g": 52.0, "sugar": 0.0, "protein": 25.0, "fiber": 8.5, "…": "…"},
+     "image_url": "/product-images/_placeholder.svg", "source": "database"}
+  ]
+}
+```
+Paging past our own rows serves Open Food Facts:
+
+```bash
+# our 10 curated protein bars, then OFF's 4,052 — offset 1000 is OFF's page 11
+curl "http://127.0.0.1:8000/products/by-category/protein_bar?limit=5&offset=1000"
+```
+
+An unknown/empty category returns `total: 0` and an empty `products` array.
+`external_total` is `null` when Open Food Facts could not be reached.
+
 ## Health Scoring Logic (V2)
 
 The `/v2/score/{barcode}` API uses a rule-based scoring system to evaluate product
 health on a scale of 1.0 to 10.0.
+
+> **Spec compliance.** This engine implements
+> [`ScoringLogic_Swapify.md`](ScoringLogic_Swapify.md) (Chandrika's two-sided
+> ingredient risk/benefit framework). Every value below — the base score, position
+> multipliers, category caps, transparency multipliers, all §3 ingredient
+> deductions, all §4 additions, the §3.7 sodium %RDA bands and the §4.1/4.2/4.4
+> per-100g stacking bonuses — matches that document. This is enforced by
+> [`test_scoring_spec.py`](test_scoring_spec.py) (100 assertions, incl. the spec's
+> two §6 worked examples): run `python test_scoring_spec.py`.
+>
+> **One documented extension:** the spec's negative sections are ingredient-based,
+> but ~96% of the catalogue has a nutrition panel and **no** ingredient list — a
+> purely ingredient-driven score would leave every sugary drink at the neutral 5.0
+> baseline. So the engine adds nutrient-panel **sugar** and **saturated-fat**
+> penalties (alongside the spec's own §3.7 sodium %RDA penalty). They pool into the
+> spec's *Sugars & Sweeteners* / *Oils & Fats* categories and share the spec 2.4
+> caps, so they never exceed what the spec allows.
 
 ### Formula
 
@@ -2826,108 +3743,84 @@ Final Score = (5.0 - Negative Deductions + Positive Additions) x Transparency Mu
 
 The result is clamped to the range **1.0 – 10.0**.
 
-> **Source of truth:** this implements `ScoringLogic_Swapify.md` (Chandrika's
-> spec). Section numbers below map to that document. It supersedes the
-> 24th-June review numbers — see [What changed](#what-changed-vs-the-june-engine).
+**Worked examples (spec §6), reproduced by the engine:**
 
-### 1. Nutrient Penalties & Bonuses
+| Product | Ingredients | Engine score | Spec |
+|---------|-------------|--------------|------|
+| Instant noodles | Maida, Palm oil, Salt, MSG, TBHQ, Sodium benzoate, Tartrazine | **1.0 (F)** | ~1.4 |
+| Protein multigrain biscuit | Whole wheat flour, Oats, Pea protein isolate, Jaggery, Cold-pressed oil | **9.1 (A)** | ~8.4 |
 
-**Penalties (per serving):**
-- **Sugar:** >=10g (-2), 5–10g (-1)
-- **Sodium** (spec §3.7, % of the 2000mg daily value): >30% RDA / >600mg (-1.0),
-  15–30% RDA / 300–600mg (-0.6)
-- **Saturated Fat** (monotonic sliding scale): >=20g (-2.0), 10–20g (-1.5),
-  6–10g (-1.0), 3–6g (-0.5)
+The two sit far apart — the spec's core credibility claim. (Small differences from
+the spec's hand-worked figures come from the engine following the §2.3 position
+table exactly and applying the §4.5/4.8 clean-label / whole-food bonuses; the
+spread and grades match.)
 
-**Bonuses (per 100g — the "bonus, stacks" rows in spec §4.1 / §4.2 / §4.4):**
-- **Protein:** >=10g (+0.6)
-- **Fiber:** >=5g (+0.5)
-- **Sugar:** <5g (+0.5)
+> **One engine, both sides (Fix 2).** Every backend endpoint scores through a
+> single function (`calculate_health_score_v2`), and the frontend's client-side
+> scorer (used for offline / CSV-driven cards) was rewritten to mirror it exactly —
+> same thresholds, per-100g bonuses, caps, transparency and 1–10 clamp — so a
+> product scores identically in a CSV list and when scanned. The client catalogue
+> CSV is regenerated from the database ([`export_products.py`](export_products.py))
+> so both sides read the same data. (Products with an ingredient list are always
+> resolved through the backend on scan, since the full 86-rule ingredient engine is
+> authoritative.)
 
-Per-serving figures are normalised to per-100g using `serving_size_g`; products
-without a serving size are skipped rather than guessed at.
+#### 1. Nutrient Penalties (per serving)
+- **Sugar:** ≥10g (−2), 5–10g (−1)
+- **Sodium** (%RDA of 2000 mg): >30% i.e. >600mg (−1.0), 15–30% i.e. 300–600mg (−0.6)
+- **Saturated Fat** (sliding scale): ≥20g (−2.0), 10–20g (−1.5), 6–10g (−1.0), 3–6g (−0.5)
 
-Nutrient penalties and bonuses are pooled into the same categories as
-ingredients (Sugars & Sweeteners, Oils & Fats, Sodium, Protein Quality, Fiber,
-Natural Sweeteners) and share their caps (see step 3).
+#### 1b. Nutrient Bonuses (per 100g)
+Normalised via `serving_size_g` before the threshold is checked:
+- **Protein:** ≥10g per 100g (+0.6)
+- **Fiber:** ≥5g per 100g (+0.5)
+- **Sugar:** <5g per 100g (+0.5)
 
-### 2. Ingredient Deductions & Additions
+Sugar, saturated-fat and sodium nutrient penalties are pooled into the same
+categories as ingredients (Sugars & Sweeteners, Oils & Fats, Sodium) and share
+their caps (see step 3).
 
-Each matched ingredient is multiplied by its position in the list (spec §2.3 —
-FSSAI requires descending order by weight, so position proxies quantity):
+> **Display basis (Fix 1).** Scoring reads the stored *per-serving* nutrition, but
+> product responses also expose a `nutrition_per_100g` block and the UI displays
+> nutrition **per 100g**, so a 200 ml drink no longer shows its full-serving
+> numbers under a "per 100g" heading. See [Get Product Details](#1-get-product-details-api).
+
+### 2. Ingredient Penalties & Position Multipliers
+Each ingredient keyword is penalized (or rewarded) and multiplied by its position
+in the list:
 - **Top 3 ingredients:** x1.5
 - **Middle (4th–8th):** x1.0
 - **9th onward / trace (index >= 8):** x0.5
 
-**Matching is longest-keyword-first**, so the most specific rule wins: "invert
-sugar syrup" (-0.6) beats "sugar" (-0.8), and "rice bran oil" (a healthy fat,
-+0.4) beats "rice bran" (fiber, +0.6). Short keywords (<=4 chars, e.g. `msg`,
-`bha`, `e102`) match on word boundaries so they cannot fire inside an unrelated
-word.
+**Ingredient penalties (base, before multiplier):**
+- **Oils & Fats:** palm oil (-0.6), fractionated fat (-0.7)
+- **Refined Carbohydrates:** maida / refined wheat flour (-0.5)
+- **Sodium:** salt (-0.6)
+- **Flavor Enhancers:** msg (-0.5)
+- **Preservatives:** tbhq (-0.8), sodium benzoate (-0.6)
+- **Artificial Colors:** tartrazine (-0.7)
+- **Sugars & Sweeteners:** sugar (-0.8), corn syrup (-0.6)
 
-**Negative ingredients (spec §3.1–3.10)** — base points before multiplier:
-
-| Category | Examples (base deduction) |
-|---|---|
-| Oils & Fats | partially hydrogenated / vanaspati (-1.2), reused frying oil (-1.0), interesterified (-0.7), fractionated fat (-0.7), palm oil / palmolein (-0.6), cottonseed oil (-0.3) |
-| Sugars & Sweeteners | HFCS (-1.0), refined sugar (-0.8), corn syrup (-0.6), invert sugar syrup (-0.6), aspartame (-0.6), acesulfame-K (-0.4), maltodextrin (-0.4), sucralose (-0.3) |
-| Preservatives | sodium nitrite/nitrate (-1.2), BHA (-1.0), TBHQ (-0.8), sulphites (-0.6), sodium benzoate (-0.6), BHT (-0.5), potassium sorbate (-0.2) |
-| Artificial Colors | tartrazine (-0.7), sunset yellow (-0.7), carmoisine (-0.6), allura red (-0.6), erythrosine (-0.5), caramel colour IV (-0.5) |
-| Flavor Enhancers | MSG / yeast extract (-0.5), disodium inosinate / guanylate (-0.3), unspecified artificial flavouring (-0.3) |
-| Emulsifiers & Stabilizers | polysorbate 80 (-0.5), carboxymethyl cellulose (-0.5), sodium stearoyl lactylate (-0.2) |
-| Sodium | disodium phosphate (-0.3) |
-| Refined Carbohydrates | maida / refined wheat flour (-0.5), modified starch (-0.3) |
-| Caffeine & Stimulants | caffeine (-0.6, escalating to -1.0 for `energy_drink`), taurine (-0.6) |
-| Other Additives | potassium bromate (-1.2), titanium dioxide (-0.7), propylene glycol (-0.3), undisclosed natural flavours (-0.2) |
-
-**Positive ingredients (spec §4.1–4.8)** — base points before multiplier:
-
-| Category | Examples (base addition) |
-|---|---|
-| Protein Quality | whey protein (+0.8), pea / soy protein isolate (+0.7), milk solids / paneer / curd (+0.5), lentil / chickpea / besan (+0.5), nuts & seeds (+0.4), egg (+0.4) |
-| Fiber | whole grain / oats / atta / millet (+0.7), oat or wheat bran (+0.6), psyllium husk (+0.4), inulin / chicory (+0.4) |
-| Healthy Fats & Oils | cold-pressed / virgin oils (+0.5), olive or rice-bran oil (+0.4), omega-3 source (+0.4) |
-| Natural Sweeteners | no added sugar (+0.7), jaggery / date paste / honey (+0.4), stevia (+0.3), monk fruit (+0.3) |
-| Natural Preservation | tocopherols (+0.3), rosemary extract (+0.3), clean-label bonus (+0.6, conditional — see below) |
-| Micronutrients | iron + folic acid (+0.4), vitamin D (+0.4), vitamin B12 (+0.3), calcium (+0.2), zinc (+0.2) |
-| Probiotics | named strain e.g. *Lactobacillus* (+0.5), live active cultures (+0.4), prebiotic fiber (+0.2) |
-| Whole-Food | short ingredient list, <=5 items (+0.6) |
-
-**Conditional clean-label bonus.** Spec §4.5 marks its "no artificial
-preservatives / colours / MSG" rows *(verified)*. Absence is only treated as
-verification when the label is specific: the +0.6 requires an ingredient list
-that (a) triggers no deduction in any additive category and (b) uses no vague
-catch-all terms. A label reading "permitted preservative" or "spices" earns
-nothing — it hides exactly the additives the bonus would be crediting its
-absence of. Products with **no** ingredient list never earn it.
+**Positive additions (base, before multiplier):**
+- **Healthy Fats:** peanuts (+0.4)
+- **Protein Quality:** skimmed milk (+0.5), milk solids (+0.5)
 
 Detected harmful ingredients are returned in the `ingredient_flags` list.
 
-### 3. Category Caps (spec §2.4)
+### 3. Category Caps (maximum deduction per category)
+Caps apply to the **combined** ingredient + nutrient penalty for each category:
+- Oils & Fats: -2.5
+- Sugars & Sweeteners: -2.5
+- Preservatives: -2.0
+- Artificial Colors: -2.0
+- Sodium: -2.0
+- Caffeine & Stimulants: -2.0
+- Flavor Enhancers: -1.5
+- Emulsifiers & Stabilizers: -1.5
+- Other Additives: -1.5
+- Refined Carbohydrates: -1.0
 
-**Deduction caps** apply to the **combined** ingredient + nutrient penalty per category:
-
-| Category | Cap | Category | Cap |
-|---|---|---|---|
-| Oils & Fats | -2.5 | Flavor Enhancers | -1.5 |
-| Sugars & Sweeteners | -2.5 | Emulsifiers & Stabilizers | -1.5 |
-| Preservatives | -2.0 | Other Additives | -1.5 |
-| Artificial Colors | -2.0 | Refined Carbohydrates | -1.0 |
-| Sodium | -2.0 | Caffeine & Stimulants | -2.0 |
-
-**Addition caps** apply the same way to the positive side, so a product cannot
-inflate its score by listing many minor "good" ingredients:
-
-| Category | Cap | Category | Cap |
-|---|---|---|---|
-| Protein Quality | +2.0 | Natural Preservation | +1.0 |
-| Fiber | +1.5 | Micronutrients | +1.0 |
-| Healthy Fats & Oils | +1.0 | Whole-Food | +1.0 |
-| Natural Sweeteners | +1.0 | Probiotics | +0.75 |
-
-Both sides are reported in the score breakdown as `category_totals` (deductions)
-and `addition_totals` (additions), each with `raw`, `cap`, `applied` and
-`capped` fields.
+Positive additions are **not** capped.
 
 ### 4. Transparency Multiplier
 Applied to the subtotal before the final clamp:
@@ -2945,58 +3838,19 @@ The clamped score (1.0 – 10.0) maps to a grade:
 
 ### Worked example — Cadbury Dairy Milk (`7622300441937`)
 
-Ingredients: *Sugar, Milk Solids (23%), Cocoa Butter, Cocoa Solids, Fractionated
-Fat, Emulsifiers (442, 476), Flavours*
-
 | Source | Item | Position | Mult | Points |
 |--------|------|----------|------|--------|
 | Ingredient | Sugar | 1 | x1.5 | -1.20 |
 | Ingredient | Fractionated Fat | 5 | x1.0 | -0.70 |
-| Nutrient | Sugar (57g/serving) | – | x1.0 | -2.00 |
-| Nutrient | Saturated Fat (19.6g/serving) | – | x1.0 | -1.50 |
+| Nutrient | Sugar (57g) | – | x1.0 | -2.00 |
+| Nutrient | Saturated Fat (19.6g) | – | x1.0 | -1.00 |
 | Addition | Milk Solids | 2 | x1.5 | +0.75 |
 
 - Sugars & Sweeteners: -1.20 + -2.00 = -3.20 → capped at **-2.50**
-- Oils & Fats: -0.70 + -1.50 = **-2.20** (within the -2.5 cap)
-- Protein Quality: **+0.75** (within the +2.0 cap)
-- No clean-label bonus: "Flavours" is a vague term, and the label is not specific
-  enough to verify the absence of anything.
-- Subtotal: 5.0 - 4.70 + 0.75 = **1.05**
+- Oils & Fats: -0.70 + -1.00 = **-1.70** (within cap)
+- Subtotal: 5.0 - 4.20 + 0.75 = **1.55**
 - Transparency: **x0.95** ("Flavours" is vague)
-- **Final: 1.05 × 0.95 = 0.9975 → clamped to 1.0 (F)**
-
-### What changed vs. the June engine
-
-| Area | Before | Now |
-|---|---|---|
-| Ingredient rules | 14 keywords | **69 rules** covering all of spec §3.1–3.10 and §4.1–4.8 |
-| Positive caps | not applied — additions summed uncapped | spec §2.4 addition caps enforced |
-| Saturated fat | **non-monotonic**: 8g scored -2 but 15g scored -1 | monotonic sliding scale, -0.5 → -2.0 |
-| Sodium | ad-hoc mg cutoffs (>=400mg -2, >=200mg -1) | spec §3.7 %RDA bands |
-| Protein / fiber bonuses | per serving (>=8g +1, >=5g +1) | per 100g (>=10g +0.6, >=5g +0.5), plus <5g sugar +0.5 |
-| Matching | first rule in list order wins | longest-keyword-first; word boundaries for short codes |
-| Plain "salt" | -0.6 ingredient deduction | removed — sodium is scored from the %RDA bands instead, so it is no longer double-counted |
-
-Regression expectations updated accordingly in `test_scoring.py`: Snickers
-1.6 → **2.1** (peanuts are spec §4.1 "nuts & seeds" under the capped Protein
-Quality category rather than an uncapped "Healthy Fats" bonus, and 5.0g
-saturated fat now sits in the 3–6g band); Cadbury 1.5 → **1.0** (19.6g saturated
-fat now scores -1.5 on the corrected scale).
-
-**Two places the spec contradicts itself** — the normative tables were followed
-over the worked examples, and both are flagged for Chandrika:
-1. Example A applies x0.5 to positions 6–7, but table §2.3 defines 4th–8th as
-   x1.0. Following the table yields **1.0**, not the 1.4 printed in the example.
-2. Example B scores oats at +0.6, but §4.2 lists oats in the +0.7 whole-grain row.
-
-### Data coverage caveat
-
-**244 of the 252 curated products currently have no `ingredients_text`.** For
-those products the entire ingredient half of this engine is inert and the score
-comes from nutrition data alone — no ingredient deductions, no ingredient
-additions, no clean-label or whole-food bonuses, and a x1.0 transparency
-multiplier. Scores will shift once ingredient data is populated. `/product-count`
-and `/offline-products` can be used to audit coverage.
+- **Final: 1.55 × 0.95 = 1.5 (F)**
 
 ## Personalized Scoring
 
@@ -3044,4 +3898,3 @@ Building on the generic example above, `low_sugar` weights the **sugar** terms b
 - Transparency: **×0.95**, then clamped to the 1.0 floor
 - **Final: 1.0 (F)** — down from the generic 1.5, reflecting the user's stricter
   view of sugar.
-
