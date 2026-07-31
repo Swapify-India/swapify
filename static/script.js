@@ -545,19 +545,17 @@ async function fetchWeeklySummaryFromBackend(){
     var res=await fetch(WEEKLY_SUMMARY_URL+'?offset='+weeklyOffset,{headers:getAuthHeaders()});
     if(!res.ok){ handleAuthExpiry(res); return; }
     var data=await res.json();
+    // NOTE: this used to also concat this browser's own local scan history on
+    // top of the backend's daily_trends. The backend total/daily_trends are
+    // already computed across every device on the account (they include this
+    // browser's scans too, once logged), so blending local history in on top
+    // double-counted same-day scans and produced a different average/graph
+    // per browser — exactly the "same Scans This Week but different Average
+    // Score / bars" bug. Backend data is now used as-is once it loads.
     var synthHistory=(data.daily_trends||[]).map(function(d){
       return{score:d.average_score,timestamp:new Date(d.date+'T12:00:00').getTime()};
     });
-    // Merge backend history (covers scans made on OTHER browsers/devices) with
-    // this browser's own local history, restricted to the selected week, so
-    // cross-device scans and this-device scans both show up.
-    var bounds=weekBounds(weeklyOffset);
-    var localH=loadHistory().filter(function(item){
-      var t=new Date(item.timestamp).getTime();
-      return t>=bounds.first.getTime() && t<=bounds.last.getTime();
-    });
-    var combinedHistory=localH.concat(synthHistory);
-    _renderWeeklyPanelCore({total:data.total_scans||combinedHistory.length,history:combinedHistory});
+    _renderWeeklyPanelCore({total:data.total_scans||0,history:synthHistory});
   }catch(e){ /* offline/unreachable backend — local render stands */ }
 }
 /* The old first renderWeeklyPanel()/_renderWeeklyPanelCore() body used to
@@ -3241,15 +3239,13 @@ function calcMonthlyStats(offset){
     return t>=bounds.first.getTime()&&t<=bounds.last.getTime();
   });
   if(_monthlyBackendCache.hasOwnProperty(offset)) {
-    var cached=_monthlyBackendCache[offset];
-    if(localH.length > cached.total) {
-      cached.total = Math.max(cached.total, localH.length);
-      localH.forEach(function(item){
-        var cat=detectCategory(item.name||'');
-        cached.catCounts[cat]=(cached.catCounts[cat]||0)+1;
-      });
-    }
-    return cached;
+    // NOTE: this used to also bump cached.total/catCounts upward using THIS
+    // browser's own local scan history (localH) whenever it outnumbered the
+    // backend's count. That's exactly why Monthly Report could show a
+    // different total in different browsers on the same account — the
+    // backend total is already the true, cross-device figure; padding it
+    // with a per-browser local count only made it diverge again.
+    return _monthlyBackendCache[offset];
   }
   if(currentUser&&currentUser.token&&!currentUser.localOnly&&!_monthlyBackendFetchInFlight[offset]){
     _monthlyBackendFetchInFlight[offset]=true;
