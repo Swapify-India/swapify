@@ -1,9 +1,866 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta http-equiv="refresh" content="0; url=/static/index.html" />
-  </head>
-  <body>
-    <p>Redirecting to <a href="/static/index.html">Swapify</a>...</p>
-  </body>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Swapify — Know What's Really In Your Food</title>
+<meta name="description" content="Scan any packaged food barcode for an instant, transparent 1–10 health score with a full ingredient breakdown — no fabricated numbers, ever.">
+<meta name="theme-color" content="#0B3B3A">
+<meta property="og:title" content="Swapify — Know What's Really In Your Food">
+<meta property="og:description" content="Scan any packaged food barcode for an instant, transparent 1–10 health score with a full ingredient breakdown.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230B3B3A'/%3E%3Cpath d='M30 55c0-14 11-25 25-25 7 0 13 3 17 7l-9 9c-2-2-5-4-8-4-8 0-14 6-14 13s6 13 14 13c6 0 11-4 13-9H55v-11h27c0 1 0 2 0 3 0 17-13 29-29 29-14 0-25-11-25-25z' fill='%23C6F135'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230B3B3A'/%3E%3Cpath d='M30 55c0-14 11-25 25-25 7 0 13 3 17 7l-9 9c-2-2-5-4-8-4-8 0-14 6-14 13s6 13 14 13c6 0 11-4 13-9H55v-11h27c0 1 0 2 0 3 0 17-13 29-29 29-14 0-25-11-25-25z' fill='%23C6F135'/%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Poppins:wght@400;600;700;800;900&family=Inter:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+<!-- Rough first-paint guess for the header nav's collapsed/expanded state,
+     so the full 10-link nav never flashes on screen and overflows/gets cut
+     off before script.js (loaded at the bottom of the page) can measure it
+     precisely with checkHeaderNavFit(). 1700px comfortably covers every
+     laptop width the full row of links realistically fits in; script.js
+     corrects this guess either way once it runs. -->
+<script>(function(){try{if(window.innerWidth<1700){document.documentElement.classList.add('nav-collapsed');}}catch(e){}})();</script>
+</head>
+<body>
+
+<header>
+  <div class="logo" onclick="window.scrollTo({top:0,behavior:'smooth'})">Swap<span>ify</span></div>
+
+  <nav class="header-nav-menu" id="headerNavMenu">
+    <button class="btn-pref-header" onclick="openPrefPanel();closeMobileNav();">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4"/><path d="M16 3.13a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0-3-3.87"/></svg>
+      Preferences
+    </button>
+    <button class="btn-pref-header" onclick="showPage('history');closeMobileNav();" id="btnWeeklyHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="4" y2="14"/><line x1="10" y1="20" x2="10" y2="9"/><line x1="16" y1="20" x2="16" y2="4"/></svg>
+      Weekly
+    </button>
+    <button class="btn-pref-header" onclick="showPage('history');closeMobileNav();" id="btnMonthlyHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+      Monthly
+    </button>
+    <button class="btn-pref-header" onclick="openForYouRecommendationsPage();closeMobileNav();" id="btnRecsHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 3v4M12 17v4M5 12H1M23 12h-4M6.3 6.3l2.8 2.8M14.9 14.9l2.8 2.8M17.7 6.3l-2.8 2.8M9.1 14.9l-2.8 2.8"/></svg>
+      For You
+    </button>
+    <button class="btn-pref-header" onclick="showPage('swaps');closeMobileNav();" id="btnMySwapsHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 7h13M17 7l-3.5-3.5M17 7l-3.5 3.5"/><path d="M20 17H7M7 17l3.5-3.5M7 17l3.5 3.5"/></svg>
+      My Swaps
+    </button>
+    <button class="btn-pref-header" onclick="showPage('categories');closeMobileNav();" id="btnCategoriesHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Categories
+    </button>
+    <button class="btn-pref-header" onclick="showPage('challenges');closeMobileNav();" id="btnChallengesHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M8 4h8v5a4 4 0 0 1-8 0V4z"/><path d="M8 5H4v2a4 4 0 0 0 4 3M16 5h4v2a4 4 0 0 1-4 3"/><line x1="12" y1="13" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Challenges
+    </button>
+    <button class="btn-pref-header" onclick="showPage('leaderboard');closeMobileNav();" id="btnLeaderboardHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      Leaderboard
+    </button>
+    <button class="btn-pref-header" onclick="showPage('cart');closeMobileNav();" id="btnShoppingListHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 2h4l2.68 12.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+      Smart Cart
+    </button>
+    <button class="btn-pref-header" onclick="showPage('settings');closeMobileNav();" id="btnSettingsHeader">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Settings
+    </button>
+  </nav>
+
+  <div class="header-right">
+    <div class="badge" id="headerDateBadge"></div>
+    <div id="headerAuthArea">
+      <button class="btn-login-header" onclick="openAuthModal()">Login</button>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
+      <span class="theme-icon" id="themeIcon">🌙</span>
+    </button>
+    <button class="hamburger-btn" id="hamburgerBtn" onclick="toggleMobileNav()" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+
+</header>
+<div class="header-nav-backdrop" id="headerNavBackdrop" onclick="closeMobileNav()"></div>
+
+<div id="activePrefStrip">
+  <div class="pref-strip-inner">
+    <span class="pref-strip-label">✦ PREFS:</span>
+    <div id="activePrefChips"></div>
+  </div>
+</div>
+
+
+<!-- ═══ PAGE: HOME ═══ -->
+<div id="page-home" class="page active">
+
+<div class="hero">
+  <div class="hero-pill">Know what you eat</div>
+  <h1>Swap it with<br>Swapify.</h1>
+  <button class="scan-btn" onclick="showPage('scanner')">
+    <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h2"/><path d="M17 4h2a2 2 0 0 1 2 2v2"/><path d="M21 16v2a2 2 0 0 1-2 2h-2"/><path d="M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg>
+    Scan a product
+  </button>
+</div>
+
+<div class="quick-stats" id="quickStats"></div>
+
+<div class="container">
+
+
+  <!-- STREAK & DAILY GOAL TRACKER (always visible) -->
+  <div id="streakGoalCard"></div>
+
+  <!-- PERSONALIZED HOME DASHBOARD (always visible feed) -->
+  <div id="homeDashboard"></div>
+
+  <!-- WEEKLY HEALTH PANEL (collapsible) -->
+  <div id="weeklyPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- MONTHLY REPORT PANEL (collapsible) -->
+  <div id="monthlyPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- FAVORITES PANEL (collapsible) -->
+  <div id="favoritesPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- MY SWAPS PANEL (collapsible) -->
+  <div id="mySwapsPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- CATEGORIES PANEL (collapsible) -->
+  <div id="categoriesPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- CHALLENGES & LEADERBOARD PANEL (collapsible) -->
+  <div id="challengesPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- SMART CART / SHOPPING LIST PANEL (collapsible) -->
+  <div id="shoppingListPanel" style="display:none;">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- BADGES PANEL (collapsible) -->
+  <div id="badgesPanel" style="display:none;"></div>
+
+  <!-- AI RECOMMENDATIONS PANEL -->
+  <div id="recommendationsPanel" style="display:none;"></div>
+
+  <!-- FLOATING QUICK SCAN WIDGET (TASK 5) -->
+  <button class="quick-scan-fab" onclick="openQuickScanWidget()" title="Quick Scan Product">
+    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h2"/><path d="M17 4h2a2 2 0 0 1 2 2v2"/><path d="M21 16v2a2 2 0 0 1-2 2h-2"/><path d="M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg>
+    <span>Quick Scan</span>
+  </button>
+
+</div><!-- end .container -->
+
+</div><!-- end #page-home -->
+
+
+<!-- ═══ PAGE: SCANNER ═══ -->
+<div id="page-scanner" class="page">
+<div class="container" style="margin-top:16px;">
+  <!-- SCAN CARD -->
+  <div class="card">
+    <div class="input-row">
+      <div class="input-wrap">
+        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="4" width="2" height="16" rx="0.5"/><rect x="6" y="4" width="1" height="16" rx="0.5"/>
+          <rect x="9" y="4" width="2" height="16" rx="0.5"/><rect x="13" y="4" width="1" height="16" rx="0.5"/>
+          <rect x="16" y="4" width="2" height="16" rx="0.5"/><rect x="20" y="4" width="2" height="16" rx="0.5"/>
+        </svg>
+        <input type="text" id="barcodeInput" placeholder="Enter barcode or product name, or say it…" oninput="handleSearchAutocompleteInput(this.value)" autocomplete="off">
+        <div class="search-suggest-list" id="searchSuggestList"></div>
+      </div>
+      <button class="btn-scan-primary" onclick="scanProduct()">Scan</button>
+      <button class="btn-mic" id="btnMic" onclick="toggleVoice()" title="Voice input">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button class="btn-camera" id="btnCamera" onclick="toggleCamera()">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+        <span class="btn-camera-label">Camera</span>
+      </button>
+    </div>
+
+    <!-- Voice status -->
+    <div class="voice-status" id="voiceStatus">
+      <div class="voice-dot"></div>
+      <span id="voiceStatusText">Listening… say a barcode or a product name</span>
+    </div>
+
+    <button type="button" class="btn-name-photo-link" onclick="triggerNameFromPhoto()">📷 Can't find a barcode? Snap the product name instead</button>
+    <div class="name-photo-status" id="namePhotoStatus"></div>
+
+    <div id="cameraSection">
+      <div id="reader"></div>
+      <div class="camera-overlay-bar">
+        <span>📡 Scanning for barcode…</span>
+        <button class="btn-camera-close" onclick="stopCamera()">✕ Close</button>
+      </div>
+    </div>
+
+    <div id="cameraError">
+      <div class="camera-error-header">
+        <div class="camera-error-icon-wrap">
+          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <line x1="1" y1="1" x2="23" y2="23"/>
+          </svg>
+        </div>
+        <div class="camera-error-text-wrap">
+          <div class="camera-error-title" id="cameraErrorTitle">Camera unavailable</div>
+          <div class="camera-error-msg" id="cameraErrorMsg">Please enter the barcode manually.</div>
+        </div>
+        <button class="camera-error-dismiss" onclick="dismissCameraError()">✕</button>
+      </div>
+      <div class="camera-error-footer">
+        <span class="camera-error-footer-label">try instead:</span>
+        <span class="camera-error-tip">⌨️ Type barcode above</span>
+        <span class="camera-error-tip camera-error-tip-action" onclick="triggerNameFromPhoto()">📷 Snap the name instead</span>
+        <span class="camera-error-tip" id="tipPermission" style="display:none;">⚙️ Allow in site settings</span>
+        <span class="camera-error-tip" id="tipReload" style="display:none;">🔄 Reload &amp; retry</span>
+        <span class="camera-error-tip" id="tipHTTPS" style="display:none;">🔒 Requires HTTPS</span>
+      </div>
+    </div>
+
+    <div class="src-note" style="display:none;">
+      <span style="color:#3949ab;">■</span> Backend&nbsp;·&nbsp;
+      <span style="color:#00a875;">■</span> Swapify CSV&nbsp;·&nbsp;
+      <span style="color:#e65100;">■</span> Open Food Facts
+    </div>
+    <div id="csvStatus" style="display:none;"></div>
+    <div id="backendStatus" style="display:none;"></div>
+  </div>
+</div>
+</div>
+
+<!-- Hidden file input used by the "Upload label photo" OCR fallback (Task 6) -->
+<input type="file" id="ocrLabelFileInput" accept="image/png,image/jpeg" style="display:none;" onchange="handleOcrLabelFileSelected(this.files)">
+<!-- capture="environment" opens the device's rear camera directly on mobile instead of a bare file picker; on desktop it just falls back to a normal file picker -->
+<input type="file" id="nameFromPhotoInput" accept="image/png,image/jpeg" capture="environment" style="display:none;" onchange="handleNameFromPhotoSelected(this.files)">
+
+<!-- ═══ PAGE: PRODUCT ═══ -->
+<div id="page-product" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back to Home</button>
+</div>
+<div class="container" style="margin-top:8px;">
+  <!-- result, alternativesResult, compareResult live here permanently -->
+  <div id="result"></div>
+  <div id="alternativesResult"></div>
+  <div id="compareResult"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: HISTORY ═══ -->
+<div id="page-history" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back to Home</button>
+</div>
+<div class="container" style="margin-top:16px;">
+  <div id="weeklyPanelPage"></div>
+  <div id="monthlyPanelPage"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: FAVORITES ═══ -->
+<div id="page-favorites" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back to Home</button>
+</div>
+<div class="container" style="margin-top:16px;">
+  <div id="favoritesPanelPage"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: PROFILE ═══ -->
+<div id="page-profile" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back to Home</button>
+</div>
+<div class="container" style="margin-top:16px;">
+  <div class="profile-quicklinks">
+    <button class="profile-quicklink-btn" onclick="showPage('challenges')"><span class="profile-quicklink-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M8 4h8v5a4 4 0 0 1-8 0V4z"/><path d="M8 5H4v2a4 4 0 0 0 4 3M16 5h4v2a4 4 0 0 1-4 3"/><line x1="12" y1="13" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>Challenges</button>
+    <button class="profile-quicklink-btn" onclick="showPage('leaderboard')"><span class="profile-quicklink-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>Leaderboard</button>
+    <button class="profile-quicklink-btn" onclick="showPage('preferences')"><span class="profile-quicklink-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4"/><path d="M16 3.13a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0-3-3.87"/></svg></span>Preferences</button>
+    <button class="profile-quicklink-btn" onclick="showPage('settings')"><span class="profile-quicklink-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>Settings</button>
+  </div>
+  <div id="profilePanelPage"></div>
+  <div id="challengesPanelPage" style="margin-top:16px;"></div>
+  <div id="badgesPanelPage" style="margin-top:16px;"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: SWAPS ═══ -->
+<div id="page-swaps" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div id="mySwapsPanelPage"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: CATEGORIES ═══ -->
+<div id="page-categories" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+  <div class="page-header-title">Product Categories</div>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div id="categoriesPanelPage"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: CART ═══ -->
+<div id="page-cart" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div id="shoppingListPanelPage"></div>
+</div>
+</div>
+
+<!-- COMPARE MODAL (single 2-product compare, legacy) -->
+<div class="modal-overlay" id="compareModal">
+  <div class="modal-box">
+    <h3>🔍 Compare with another product</h3>
+    <p>Enter the barcode of the second product to compare side-by-side.</p>
+    <input type="text" id="compareInput" placeholder="Enter second barcode…">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeCompareModal()">Cancel</button>
+      <button onclick="runCompare()">Compare</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ PAGE: COMPARE ═══ -->
+<div id="page-compare" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+  <div class="page-header-title">Compare Products</div>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div class="compare-panel-overlay embedded-page-panel active" id="multiCompareOverlay">
+    <div class="compare-panel">
+      <div class="compare-panel-header">
+        <div class="compare-panel-title">Up to 4 products side-by-side</div>
+        <div class="compare-panel-actions">
+          <button class="btn-compare-clear" onclick="clearCompareList()">Clear all</button>
+        </div>
+      </div>
+      <div class="compare-panel-body" id="multiCompareBody">
+        <!-- rendered by JS -->
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ PAGE: PREFERENCES ═══ -->
+<div id="page-preferences" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+  <div class="page-header-title">Dietary Preferences</div>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div class="pref-overlay embedded-page-panel active" id="prefOverlay">
+    <div class="pref-panel" id="prefPanel">
+      <div class="pref-panel-subtitle">Your preferences will be remembered and used to highlight better-fit products.</div>
+      <div class="pref-section-title">Nutrition Goals</div>
+      <div class="pref-grid" id="prefGrid">
+        <div class="pref-toggle pref-lime" data-pref="low_sugar" onclick="togglePref(this)"><span class="pref-icon">🍬</span> Low Sugar</div>
+        <div class="pref-toggle pref-lime" data-pref="high_protein" onclick="togglePref(this)"><span class="pref-icon">💪</span> High Protein</div>
+        <div class="pref-toggle pref-lime" data-pref="low_sodium" onclick="togglePref(this)"><span class="pref-icon">🧂</span> Low Sodium</div>
+        <div class="pref-toggle pref-lime" data-pref="low_fat" onclick="togglePref(this)"><span class="pref-icon">🥑</span> Low Fat</div>
+        <div class="pref-toggle pref-lime" data-pref="high_fiber" onclick="togglePref(this)"><span class="pref-icon">🌾</span> High Fiber</div>
+        <div class="pref-toggle pref-lime" data-pref="low_calorie" onclick="togglePref(this)"><span class="pref-icon">⚡</span> Low Calorie</div>
+      </div>
+      <div class="pref-section-title">Dietary Lifestyle</div>
+      <div class="pref-grid">
+        <div class="pref-toggle pref-lime" data-pref="vegan" onclick="togglePref(this)"><span class="pref-icon">🌿</span> Vegan</div>
+        <div class="pref-toggle pref-lime" data-pref="vegetarian" onclick="togglePref(this)"><span class="pref-icon">🥦</span> Vegetarian</div>
+        <div class="pref-toggle pref-lime" data-pref="diabetic_friendly" onclick="togglePref(this)"><span class="pref-icon">🩺</span> Diabetic Friendly</div>
+        <div class="pref-toggle pref-lime" data-pref="heart_healthy" onclick="togglePref(this)"><span class="pref-icon">❤️</span> Heart Healthy</div>
+      </div>
+      <div class="pref-section-title">Label &amp; Ingredients</div>
+      <div class="pref-grid">
+        <div class="pref-toggle pref-lime" data-pref="no_preservatives" onclick="togglePref(this)"><span class="pref-icon">🧪</span> No Preservatives</div>
+        <div class="pref-toggle pref-lime" data-pref="no_artificial_colors" onclick="togglePref(this)"><span class="pref-icon">🎨</span> No Artificial Colors</div>
+        <div class="pref-toggle pref-lime" data-pref="no_artificial_flavors" onclick="togglePref(this)"><span class="pref-icon">🧫</span> No Artificial Flavors</div>
+        <div class="pref-toggle pref-lime" data-pref="no_palm_oil" onclick="togglePref(this)"><span class="pref-icon">🌴</span> No Palm Oil</div>
+        <div class="pref-toggle pref-lime" data-pref="clean_label" onclick="togglePref(this)"><span class="pref-icon">✨</span> Clean Label</div>
+      </div>
+      <div class="pref-panel-actions">
+        <button class="btn-pref-save" onclick="savePrefs()">✓ Save Preferences</button>
+        <button class="btn-pref-reset" onclick="resetPrefs()">Reset</button>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ PAGE: LEADERBOARD ═══ -->
+<div id="page-leaderboard" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+  <div class="page-header-title">Leaderboard</div>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div id="leaderboardPanelFullPage"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: CHALLENGES ═══ -->
+<div id="page-challenges" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+  <div class="page-header-title">Challenges</div>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div id="challengesPanelFullPage"></div>
+</div>
+</div>
+
+<!-- ═══ PAGE: SETTINGS ═══ -->
+<div id="page-settings" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="showPage('home')">&#8592; Back</button>
+  <div class="page-header-title">Settings</div>
+</div>
+<div class="container" style="margin-top:8px;">
+  <div id="settingsPanelFullPage"></div>
+</div>
+</div>
+
+<!-- COMPARE FAB (floating, shows count of products queued for comparison) -->
+<div class="compare-fab" id="compareFab" onclick="showPage('compare')">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+  <span>Compare</span>
+  <span class="compare-fab-count" id="compareFabCount">0</span>
+</div>
+
+<!-- ONBOARDING (first-visit only) -->
+<div class="pref-overlay onboard-overlay" id="onboardOverlay">
+  <div class="pref-panel onboard-panel">
+    <div class="onboard-hero">
+      <div class="onboard-logo">Swap<span>ify</span></div>
+      <div class="onboard-tagline">Scan smarter. Eat better. Let's set things up for you.</div>
+    </div>
+    <div class="onboard-benefits">
+      <div class="onboard-benefit"><span class="onboard-benefit-icon">📷</span><span>Scan any barcode for an instant 0–10 health score</span></div>
+      <div class="onboard-benefit"><span class="onboard-benefit-icon">🔄</span><span>Get healthier swap suggestions, automatically</span></div>
+      <div class="onboard-benefit"><span class="onboard-benefit-icon">📈</span><span>Track your scan streak and progress over time</span></div>
+    </div>
+    <div class="pref-section-title">What matters most to you? (optional)</div>
+    <div class="pref-grid" id="onboardGrid">
+      <div class="pref-toggle pref-lime" data-pref="low_sugar" onclick="togglePref(this)"><span class="pref-icon">🍬</span> Low Sugar</div>
+      <div class="pref-toggle pref-lime" data-pref="high_protein" onclick="togglePref(this)"><span class="pref-icon">💪</span> High Protein</div>
+      <div class="pref-toggle pref-lime" data-pref="low_sodium" onclick="togglePref(this)"><span class="pref-icon">🧂</span> Low Sodium</div>
+      <div class="pref-toggle pref-lime" data-pref="vegan" onclick="togglePref(this)"><span class="pref-icon">🌿</span> Vegan</div>
+      <div class="pref-toggle pref-lime" data-pref="vegetarian" onclick="togglePref(this)"><span class="pref-icon">🥦</span> Vegetarian</div>
+      <div class="pref-toggle pref-lime" data-pref="diabetic_friendly" onclick="togglePref(this)"><span class="pref-icon">🩺</span> Diabetic Friendly</div>
+    </div>
+    <div class="pref-panel-actions">
+      <button class="btn-pref-save" onclick="completeOnboarding(true)">✓ Get Started</button>
+      <button class="btn-pref-reset" onclick="completeOnboarding(false)">Skip for now</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUTH MODAL -->
+<div class="auth-overlay" id="authOverlay" onclick="handleAuthOverlayClick(event)">
+  <div class="auth-box-wrap">
+    <div class="auth-box" id="authBox">
+      <div class="auth-logo">Swap<span>ify</span></div>
+      <div class="auth-subtitle">Sign in to track your health journey</div>
+      <div class="auth-tabs">
+        <button class="auth-tab active" id="tabLogin" onclick="switchAuthTab('login')">Login</button>
+        <button class="auth-tab" id="tabRegister" onclick="switchAuthTab('register')">Register</button>
+      </div>
+      <div id="authError" class="auth-error"></div>
+      <div id="loginForm">
+        <div class="auth-field"><label>Email</label><input type="email" id="loginEmail" class="no-icon-input" placeholder="you@example.com"></div>
+        <div class="auth-field"><label>Password</label><input type="password" id="loginPassword" class="no-icon-input" placeholder="••••••••"></div>
+        <div class="auth-forgot-wrap">
+          <button type="button" class="auth-forgot-btn" onclick="openForgotPasswordModal()">Forgot Password?</button>
+        </div>
+        <button class="auth-btn" onclick="doLogin()">Sign In →</button>
+        <div class="auth-divider"><span>OR</span></div>
+        <button type="button" class="btn-google-login" onclick="loginWithGoogle()">
+          <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
+          Continue with Google
+        </button>
+        <div class="auth-divider" style="margin-top:12px;"><span>or guest access</span></div>
+        <button class="auth-btn" style="background:var(--off-white);color:var(--text);font-size:0.84rem;padding:10px;" onclick="closeAuthModal()">Continue without login</button>
+      </div>
+      <div id="registerForm" style="display:none;">
+        <div class="auth-field"><label>Full Name</label><input type="text" id="regName" class="no-icon-input" placeholder="Your Full Name"></div>
+        <div class="auth-field"><label>Email</label><input type="email" id="regEmail" class="no-icon-input" placeholder="you@example.com"></div>
+        <div class="auth-field"><label>Password</label><input type="password" id="regPassword" class="no-icon-input" placeholder="Min 6 characters"></div>
+        <button class="auth-btn" onclick="doRegister()">Create Account →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FORGOT PASSWORD MODAL -->
+<div class="modal-overlay" id="forgotPasswordOverlay" onclick="handleOverlayClick(event, 'forgotPasswordOverlay')">
+  <div class="modal-box">
+    <h3>🔑 Forgot Password</h3>
+    <p>Enter your registered email address and we will send you a password reset link.</p>
+    <div id="forgotPasswordStatus"></div>
+    <div class="auth-field" style="margin-bottom:14px;"><label style="font-size:0.75rem;">Email Address</label><input type="email" id="forgotEmailInput" placeholder="you@example.com" autocomplete="email"></div>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeForgotPasswordModal()">Cancel</button>
+      <button onclick="submitForgotPassword()" style="background:linear-gradient(135deg,var(--accent),#6e46ff);color:#fff;font-weight:700;">Send Reset Link →</button>
+    </div>
+  </div>
+</div>
+
+<!-- RESET PASSWORD MODAL -->
+<div class="modal-overlay" id="resetPasswordOverlay" onclick="handleOverlayClick(event, 'resetPasswordOverlay')">
+  <div class="modal-box">
+    <h3>🔐 Reset Password</h3>
+    <p>Set a new password for your Swapify account.</p>
+    <div id="resetPasswordStatus"></div>
+    <div class="auth-field" style="margin-bottom:10px;"><label style="font-size:0.75rem;">New Password</label><input type="password" id="resetPasswordInput" placeholder="New password (min 6 chars)" autocomplete="new-password"></div>
+    <div class="auth-field" style="margin-bottom:14px;"><label style="font-size:0.75rem;">Confirm Password</label><input type="password" id="resetPasswordConfirmInput" placeholder="Confirm new password" autocomplete="new-password"></div>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeResetPasswordModal()">Cancel</button>
+      <button onclick="submitResetPassword()" style="background:linear-gradient(135deg,var(--accent),#6e46ff);color:#fff;font-weight:700;">Set New Password →</button>
+    </div>
+  </div>
+</div>
+
+<!-- REPORT MISSING PRODUCT MODAL -->
+<div class="modal-overlay" id="reportMissingModalOverlay" onclick="handleOverlayClick(event, 'reportMissingModalOverlay')">
+  <div class="modal-box">
+    <h3>📦 Report Missing Product</h3>
+    <p>Help us expand Swapify! Enter product details so our team can add it to the database.</p>
+    <div id="reportMissingStatus"></div>
+    <div class="auth-field" style="margin-bottom:10px;"><label style="font-size:0.75rem;">Barcode</label><input type="text" id="reportMissingBarcode" readonly style="background:var(--gray-light);font-family:'DM Mono',monospace;color:var(--text);"></div>
+    <div class="auth-field" style="margin-bottom:10px;"><label style="font-size:0.75rem;">Product Name</label><input type="text" id="reportMissingName" placeholder="e.g. Britannia Good Day Cookies"></div>
+    <div class="auth-field" style="margin-bottom:10px;"><label style="font-size:0.75rem;">Brand (optional)</label><input type="text" id="reportMissingBrand" placeholder="e.g. Britannia"></div>
+    <div class="auth-field" style="margin-bottom:14px;"><label style="font-size:0.75rem;">Comments / Ingredients (optional)</label><textarea id="reportMissingComment" style="width:100%;height:60px;padding:8px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:0.8rem;background:var(--off-white);color:var(--text);outline:none;" placeholder="e.g. Contains wheat, sugar..."></textarea></div>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeReportMissingModal()">Cancel</button>
+      <button onclick="submitMissingReport()" style="background:linear-gradient(135deg,var(--lime),var(--lime-dark));color:var(--navy-deep);font-weight:700;">Submit Report →</button>
+    </div>
+  </div>
+</div>
+
+<!-- PROFILE PANEL -->
+<div class="profile-overlay" id="profileOverlay" onclick="handleProfileOverlayClick(event)">
+  <div class="profile-panel" id="profilePanel">
+    <div class="profile-header">
+      <button class="profile-close" onclick="closeProfilePanel()">✕ Close</button>
+      <div class="profile-avatar-lg" id="profileAvatarLg">R</div>
+      <div class="profile-name" id="profileName">Guest</div>
+      <div class="profile-email" id="profileEmailDisplay">Not logged in</div>
+      <div class="profile-sync-banner" id="profileSyncBanner" style="display:none;"></div>
+    </div>
+    <div class="profile-body">
+      <div class="profile-section-title">Dashboard</div>
+      <div class="stats-row">
+        <div class="stat-card"><div class="stat-num" id="statTotalScans">0</div><div class="stat-lbl">All-Time Scans</div></div>
+        <div class="stat-card"><div class="stat-num" id="statAvgScore">—</div><div class="stat-lbl">Avg Score</div></div>
+        <div class="stat-card"><div class="stat-num" id="statStreak">0</div><div class="stat-lbl">Day Streak</div></div>
+      </div>
+      <div class="streak-card" style="margin-top:10px;">
+        <div class="streak-icon">🔥</div>
+        <div>
+          <div class="streak-text" id="streakText">Start scanning to build a streak!</div>
+          <div class="streak-sub" id="streakSub">Scan any product daily to build your streak</div>
+        </div>
+      </div>
+      <div class="profile-section-title">Score History (last 7 scans)</div>
+      <div class="chart-wrap">
+        <div class="chart-title">HEALTH SCORE OVER TIME</div>
+        <div class="bar-chart" id="scoreBarChart"><div class="scan-empty" style="flex:1;height:auto;padding:10px;">No scans yet</div></div>
+      </div>
+      <div class="profile-section-title">Recent Scans</div>
+      <div class="scan-list" id="recentScansList"><div class="scan-empty">No scans yet — scan a product to get started!</div></div>
+      <div class="profile-section-title">Your Badges</div>
+      <div class="profile-badges-grid" id="profileBadgesGrid"><!-- rendered by JS --></div>
+      <div class="profile-section-title">Preferences</div>
+      <button class="btn-pref-save" style="width:100%;margin-bottom:10px;" onclick="closeProfilePanel();openPrefPanel();">⚙️ Edit Dietary Preferences</button>
+      <button class="btn-logout" id="profileLogoutBtn" onclick="doLogout()">↩ Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- SHARE MODAL -->
+<div class="share-modal-overlay" id="shareModalOverlay" onclick="handleShareOverlayClick(event)">
+  <div class="share-modal-box">
+    <div class="share-modal-title">📤 Share Product Score</div>
+    <div id="shareCardPreview">
+      <div class="share-card-header">
+        <div class="share-card-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#0B3B3A" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+        <div class="share-card-wordmark">Swapify</div>
+      </div>
+      <div class="share-card-body">
+        <div class="share-card-thumb" id="sc-thumb">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+        </div>
+        <div class="share-card-product" id="sc-name">Product Name</div>
+        <div class="share-card-brand" id="sc-brand">Brand</div>
+        <div class="share-card-dial">
+          <div class="share-card-badge-num" id="sc-grade-num">10</div>
+          <div class="share-card-badge-lbl">/10</div>
+          <div class="share-card-grade-pill" id="sc-badge">Grade A</div>
+        </div>
+        <div class="share-card-warnings" id="sc-warnings"></div>
+        <div class="share-card-badges-row" id="sc-badges-row"></div>
+      </div>
+      <div class="share-card-footer">
+        <div class="share-card-cta">I scanned this with Swapify. Know what&rsquo;s really in your food.</div>
+        <div class="share-card-scanme">SCAN<br>ME</div>
+      </div>
+    </div>
+    <div class="share-actions">
+      <button class="share-btn-dl" onclick="downloadShareCard()">⬇ Download PNG</button>
+      <button class="share-btn-copy" onclick="copyShareCard()">📋 Copy Image</button>
+    </div>
+    <button class="share-btn-dl" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#25D366,#128C7E);" onclick="shareToWhatsApp()">📱 Share via WhatsApp</button>
+    <button class="share-btn-cancel" onclick="closeShareModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- CROWDSOURCED RATING MODAL -->
+<div class="share-modal-overlay" id="ratingModalOverlay" onclick="handleRatingOverlayClick(event)">
+  <div class="share-modal-box rating-modal-box">
+    <div class="share-modal-title">⭐ Rate This Product</div>
+    <div class="rating-modal-product-name" id="ratingModalProductName">Product Name</div>
+    <div class="rating-param-block">
+      <div class="rating-param-label">😋 Taste</div>
+      <div class="star-row" id="starRowTaste" data-param="taste"></div>
+    </div>
+    <div class="rating-param-block">
+      <div class="rating-param-label">🏆 Quality</div>
+      <div class="star-row" id="starRowQuality" data-param="quality"></div>
+    </div>
+    <div class="rating-param-block">
+      <div class="rating-param-label">💰 Value for Money</div>
+      <div class="star-row" id="starRowValue" data-param="value"></div>
+    </div>
+    <div class="rating-modal-hint" id="ratingModalHint">Tap stars to rate, then submit.</div>
+    <div class="share-actions" style="margin-top:14px;">
+      <button class="share-btn-dl" onclick="submitProductRating()">✓ Submit Rating</button>
+      <button class="share-btn-copy" onclick="closeRatingModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- HIDDEN FILE INPUT FOR IMAGE UPLOADS (Task 3) -->
+<input type="file" id="galleryUploadInput" accept="image/*" style="display:none;" onchange="handleGalleryFileSelected(event)">
+
+<!-- IMAGE GALLERY LIGHTBOX -->
+<div class="share-modal-overlay" id="galleryLightboxOverlay" onclick="handleGalleryLightboxClick(event)">
+  <div class="gallery-lightbox-box">
+    <img id="galleryLightboxImg" src="" alt="Product image">
+    <button class="gallery-lightbox-close" onclick="closeGalleryLightbox()">✕ Close</button>
+  </div>
+</div>
+
+<!-- WRITE A REVIEW MODAL (Task 3) -->
+<div class="share-modal-overlay" id="reviewModalOverlay" onclick="handleReviewOverlayClick(event)">
+  <div class="share-modal-box rating-modal-box">
+    <div class="share-modal-title">📝 Write a Review</div>
+    <div class="rating-modal-product-name" id="reviewModalProductName">Product Name</div>
+    <div class="rating-param-block">
+      <div class="rating-param-label">Overall Rating</div>
+      <div class="star-row" id="reviewStarRow"></div>
+    </div>
+    <textarea id="reviewTextInput" class="review-textarea" placeholder="Share your experience with this product…" maxlength="500" oninput="document.getElementById('reviewCharCount').textContent=this.value.length+' / 500'"></textarea>
+    <div class="review-char-count" id="reviewCharCount">0 / 500</div>
+    <div class="share-actions" style="margin-top:10px;">
+      <button class="share-btn-dl" onclick="submitReview()">✓ Submit Review</button>
+      <button class="share-btn-copy" onclick="closeReviewModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- HOW SCORING WORKS — dedicated page (Task 2E). Was a paragraph glued onto
+     every page (favorites, history, etc.); now lives in one place and is
+     linked to from wherever it's relevant. -->
+<div id="page-how-scoring-works" class="page">
+<div class="page-header-bar">
+  <button class="page-back-btn" onclick="goBackFromHowScoringWorks()">&#8592; Back</button>
+  <div class="page-header-title">How Scoring Works</div>
+</div>
+<div class="container" style="margin-top:16px;">
+  <div class="about-card">
+    <h3>📊 About Swapify Health Score</h3>
+    <p class="about-card-intro">Every product starts neutral and <strong>earns</strong> its score — nothing is assumed. Here's exactly how each part of the label adds up:</p>
+
+    <table class="how-table">
+      <thead>
+        <tr><th>Component</th><th>What it means</th><th>Effect on score</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-base">⚖️</span>Base Score</td>
+          <td>Neutral starting point for every product</td>
+          <td><span class="how-effect how-effect-neutral">Starts at 5.0</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">🍬</span>Sugar Penalty</td>
+          <td>Docked when sugar per serving is high</td>
+          <td><span class="how-effect how-effect-neg">−1 to −2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">🧂</span>Sodium Penalty</td>
+          <td>Docked when sodium per serving is high</td>
+          <td><span class="how-effect how-effect-neg">−1 to −2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">🥓</span>Saturated Fat Penalty</td>
+          <td>Docked when saturated fat per serving is high</td>
+          <td><span class="how-effect how-effect-neg">−1 to −2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-good">💪</span>Protein Bonus</td>
+          <td>Rewarded when protein per serving is high</td>
+          <td><span class="how-effect how-effect-pos">+1 to +2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-good">🌾</span>Fiber Bonus</td>
+          <td>Rewarded when fiber per serving is high</td>
+          <td><span class="how-effect how-effect-pos">+1 to +2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">⚠️</span>Ingredient Penalties</td>
+          <td>Harmful ingredients — palm oil, MSG, artificial dyes, and more</td>
+          <td><span class="how-effect how-effect-neg">−0.5 to −0.8 each</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-neutral">🔍</span>Transparency Multiplier</td>
+          <td>Vague labelling (e.g. just "flavours") nudges the final score down</td>
+          <td><span class="how-effect how-effect-mult">×0.95–×1.05</span></td>
+        </tr>
+        <tr class="how-final-row">
+          <td class="how-comp"><span class="how-comp-icon how-icon-final">🎯</span>Final Score</td>
+          <td>Everything above, combined</td>
+          <td><span class="how-effect how-effect-final">Your health score</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="score-legend">
+      <div class="legend-item score-a">A 9–10</div>
+      <div class="legend-item score-b">B 7–8</div>
+      <div class="legend-item score-c">C 5–6</div>
+      <div class="legend-item score-d">D 3–4</div>
+      <div class="legend-item score-f">F 0–2</div>
+    </div>
+  </div>
+</div>
+</div>
+<footer id="siteFooter">Swapify · Scan. Compare. Eat Smarter.</footer>
+
+<!-- AI NUTRITIONIST CHAT WIDGET -->
+<button class="chat-fab" id="chatFab" onclick="toggleChatWindow()" aria-label="Chat with AI Nutritionist" title="Chat with AI Nutritionist">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+  <span class="chat-fab-dot"></span>
+</button>
+
+<div class="chat-window" id="chatWindow">
+  <div class="chat-header">
+    <div>
+      <div class="chat-header-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        Swapify AI Nutritionist
+      </div>
+      <div class="chat-header-sub">Ask me about this product, diets, or healthier swaps</div>
+    </div>
+    <button class="chat-close-btn" onclick="toggleChatWindow(false)" aria-label="Close chat">✕</button>
+  </div>
+  <div class="chat-context-pill" id="chatContextPill">
+    🛒 Asking about: <strong id="chatContextName">—</strong>
+  </div>
+  <div class="chat-messages" id="chatMessages">
+    <div class="chat-empty-state" id="chatEmptyState">👋 Hi! I'm your AI Nutritionist.<br>Scan a product, then ask me anything about it — or just ask a general nutrition question. Try the substitution chips below for quick ingredient swap ideas!</div>
+  </div>
+  <div class="chat-suggestions" id="chatSuggestions" style="display:none;">
+    <span class="chat-suggestions-label">About this product</span>
+    <button class="chat-chip" onclick="sendChatMessage('Is this product safe for diabetics?')">Safe for diabetics?</button>
+    <button class="chat-chip" onclick="sendChatMessage('Why did this product get a low score?')">Why this score?</button>
+    <button class="chat-chip" onclick="sendChatMessage('What is a healthier alternative?')">Healthier alternative?</button>
+    <span class="chat-suggestions-label">Ingredient substitutions</span>
+    <button class="chat-chip chat-chip-sub" onclick="sendChatMessage('What can I substitute for sugar in this recipe?')">🍬 Sugar substitute</button>
+    <button class="chat-chip chat-chip-sub" onclick="sendChatMessage('What can I substitute for salt to lower sodium?')">🧂 Salt substitute</button>
+    <button class="chat-chip chat-chip-sub" onclick="sendChatMessage('What can I substitute for refined flour (maida)?')">🌾 Flour substitute</button>
+    <button class="chat-chip chat-chip-sub" onclick="sendChatMessage('What can I substitute for saturated/palm oil?')">🥑 Oil substitute</button>
+    <button class="chat-chip chat-chip-sub" onclick="sendChatMessage('What can I substitute for artificial sweeteners?')">🌿 Sweetener substitute</button>
+  </div>
+  <div class="chat-input-row">
+    <input type="text" id="chatInput" placeholder="Ask a question or 'substitute for ___'…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChatMessage();}">
+    <button class="chat-send-btn" id="chatSendBtn" onclick="sendChatMessage()" aria-label="Send">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+  </div>
+</div>
+<script src="/static/script.js"></script>
+
+<!-- ══ BOTTOM NAVIGATION BAR ══ -->
+<nav class="bottom-nav">
+  <button class="nav-btn active" id="nav-home" onclick="showPage('home')">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+    </span>
+    <span class="nav-label">Home</span>
+  </button>
+  <button class="nav-btn" id="nav-history" onclick="showPage('history')">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    </span>
+    <span class="nav-label">History</span>
+  </button>
+  <button class="nav-btn nav-scan-btn" id="nav-scanner" onclick="showPage('scanner')">
+    <span class="nav-icon">
+      <div class="nav-scan-fab">
+        <svg viewBox="0 0 24 24"><rect x="2" y="4" width="2" height="16" rx="0.5"/><rect x="6" y="4" width="1" height="16" rx="0.5"/><rect x="9" y="4" width="2" height="16" rx="0.5"/><rect x="13" y="4" width="1" height="16" rx="0.5"/><rect x="16" y="2" width="2" height="16" rx="0.5"/><rect x="20" y="4" width="2" height="16" rx="0.5"/></svg>
+      </div>
+    </span>
+    <span class="nav-label">Scan</span>
+  </button>
+  <button class="nav-btn" id="nav-favorites" onclick="showPage('favorites')">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+    </span>
+    <span class="nav-label">Favorites</span>
+  </button>
+  <button class="nav-btn" id="nav-profile" onclick="showPage('profile')">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    </span>
+    <span class="nav-label">Profile</span>
+  </button>
+</nav>
+</body>
 </html>
