@@ -1,6 +1,8 @@
 {
   "routes": [
-    { "src": "/static/(.*)", "dest": "/static/$1" },
+    { "src": "/style.css", "dest": "/static/style.css" },
+    { "src": "/script.js", "dest": "/static/script.js" },
+    { "src": "/swapify_products.csv", "dest": "/static/swapify_products.csv" },
     { "src": "/(.*)", "dest": "/static/index.html" }
   ]
 }
