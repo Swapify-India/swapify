@@ -1693,91 +1693,97 @@ function searchCategory(cat,excludeBarcode,minScore){
 /* ══════════════════════════════════════════════════════
    SCAN PRODUCT
    ══════════════════════════════════════════════════════ */
-inputEl.addEventListener('keydown',function(e){if(e.key==='Enter')scanProduct();});
+// inputEl.addEventListener('keydown',function(e){if(e.key==='Enter')scanProduct();});
 function quickScan(c){ inputEl.value=c; scanProduct(); }
 
 async function scanProduct() {
 
-    resultEl.innerHTML = "";
-    resultEl.className = "";
-    altEl.innerHTML = "";
-    altEl.className = "";
-    compareEl.innerHTML = "";
-    compareEl.className = "";
-    lastScannedProduct = null;
+  // --- Step 1: Navigate to the product page first ---
+  showPage('product');
 
-    var barcode = inputEl.value.trim();
+  // --- Step 2: Get DOM elements now that the page is visible ---
+  var resultEl = document.getElementById('result');
+  var altEl = document.getElementById('alternativesResult');
+  var compareEl = document.getElementById('compareResult');
+  var inputEl = document.getElementById('barcodeInput');
 
-    if (!barcode) {
-        showError("Please enter a barcode.");
-        return;
-    }
+  // Clear previous results
+  resultEl.innerHTML = "";
+  resultEl.className = "";
+  altEl.innerHTML = "";
+  altEl.className = "";
+  compareEl.innerHTML = "";
+  compareEl.className = "";
+  lastScannedProduct = null;
 
-    if (!/^\d+$/.test(barcode)) {
-        showError("Barcodes should contain digits only.");
-        return;
-    }
+  // --- Step 3: Get barcode from input ---
+  var barcode = inputEl.value.trim();
 
-    // Task 3 — log this scan attempt with device info for Dhruv's experiments.
-    // Fire-and-forget: not awaited, wrapped so a logging failure can never
-    // interrupt or break the actual product scan below.
-    logScanEvent(barcode, { event: 'scan_attempt' });
+  if (!barcode) {
+      showError("Please enter a barcode.");
+      return;
+  }
 
-    resultEl.className = "visible";
-    resultEl.innerHTML = '<div class="loading-spinner">Scanning…</div>';
+  if (!/^\d+$/.test(barcode)) {
+      showError("Barcodes should contain digits only.");
+      return;
+  }
 
-    try {
+  // Task 3 — log scan attempt
+  logScanEvent(barcode, { event: 'scan_attempt' });
 
-        var prod = await fetchProduct(barcode);
+  resultEl.className = "visible";
+  resultEl.innerHTML = '<div class="loading-spinner">Scanning…</div>';
 
-        if (!prod) {
-            throw new Error("No product returned");
-        }
+  try {
+      var prod = await fetchProduct(barcode);
 
-        lastScannedProduct = prod;
+      if (!prod) {
+          throw new Error("No product returned");
+      }
 
-        logScanEvent(barcode, { event: 'scan_result', outcome: 'found', source: prod.type || 'swapify', score: prod.result ? prod.result.score : null });
+      lastScannedProduct = prod;
 
-        addToHistory({
-            barcode: prod.barcode,
-            name: (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product',
-            score: prod.result.score,
-            grade: prod.result.grade,
-            timestamp: new Date().toISOString()
-        });
-        // GET /product/{barcode} (source "BACKEND API") already logs the scan
-        // server-side itself. The other two sources — the bundled CSV
-        // database and Open Food Facts — are fetched directly by the
-        // browser and never touch the backend at all, so without this call
-        // they'd never be counted toward Weekly/Monthly/All-Time totals.
-        if (prod.source !== 'BACKEND API') logScanToBackendHistory(prod.barcode, prod.source, (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product', prod.result.score);
+      logScanEvent(barcode, { event: 'scan_result', outcome: 'found', source: prod.type || 'swapify', score: prod.result ? prod.result.score : null });
 
-if (prod.type === "off") {
-    renderOFF(prod);
-} else {
-    renderSwapify(prod);
-}
+      addToHistory({
+          barcode: prod.barcode,
+          name: (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product',
+          score: prod.result.score,
+          grade: prod.result.grade,
+          timestamp: new Date().toISOString()
+      });
 
-await loadAlternatives(prod);
+      if (prod.source !== 'BACKEND API') {
+          logScanToBackendHistory(prod.barcode, prod.source, (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product', prod.result.score);
+      }
 
-    } catch (e) {
+      if (prod.type === "off") {
+          renderOFF(prod);
+      } else {
+          renderSwapify(prod);
+      }
 
-        console.error("Scan Error:", e);
+      await loadAlternatives(prod);
 
-        // Task 5 — handle API errors gracefully: a genuine "not found" (checked
-        // every source and came up empty) gets the friendly fallback screen;
-        // an actual network/backend failure (can't reach the API at all) gets
-        // a distinct message so the user isn't told a real product is missing
-        // when the real problem is connectivity.
-        if (isNetworkError(e)) {
-            logScanEvent(barcode, { event: 'scan_result', outcome: 'network_error' });
-            showNetworkError(barcode);
-        } else {
-            logScanEvent(barcode, { event: 'scan_result', outcome: 'not_found' });
-            showProductNotFound(barcode);
-        }
+  } catch (e) {
+      console.error("Scan Error:", e);
+      if (isNetworkError(e)) {
+          logScanEvent(barcode, { event: 'scan_result', outcome: 'network_error' });
+          showNetworkError(barcode);
+      } else {
+          logScanEvent(barcode, { event: 'scan_result', outcome: 'not_found' });
+          showProductNotFound(barcode);
+      }
+  }
 
-    }
+  // --- Step 4: Scroll results into view ---
+  var rEl = document.getElementById('result');
+  if (rEl && rEl.innerHTML.trim()) {
+      setTimeout(function() {
+          rEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+  }
 }
 
 /* ══════════════════════════════════════════════════════
