@@ -1540,7 +1540,7 @@ function detectCategory(name){
 /* ══════════════════════════════════════════════════════
    FETCH PRODUCT
    ══════════════════════════════════════════════════════ */
-var resultEl=document.getElementById('result'),altEl=document.getElementById('alternativesResult'),compareEl=document.getElementById('compareResult'),inputEl=document.getElementById('barcodeInput');
+
 var lastScannedProduct=null;
 
 async function fetchProduct(barcode){
